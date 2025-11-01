@@ -74,7 +74,7 @@ def transform_gmm(
     def transform_single_covariance(
         cov: Float[Array, "d d"],
     ) -> Float[Array, "d d"]:
-        return scale * rotation @ cov @ rotation.T
+        return jnp.square(scale) * rotation @ cov @ rotation.T
 
     transformed_covs = jax.vmap(transform_single_covariance, 0, 0)(covariances)
 
