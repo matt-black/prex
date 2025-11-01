@@ -66,7 +66,6 @@ def test_rigid_transform_trans():
 def test_rigid_opt_rot():
     key = jr.PRNGKey(40)
     mu, cov, wgt = make_random_gmm(5, 3, key)
-    self_energy = self_energy_gmm(mu, cov, wgt)
     # define fwd transform
     alpha = jnp.array(jnp.pi / 8)
     beta = jnp.array(0.0)
@@ -76,7 +75,7 @@ def test_rigid_opt_rot():
     mu2, cov2 = transform_gmm_rotangles(
         mu, cov, scale, alpha, beta, gamma, trans
     )
-
+    rescaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
     max_iter = 100
     par_f, (_, l2_final, num_iter) = optimize_single_scale(
         mu2,
@@ -91,11 +90,14 @@ def test_rigid_opt_rot():
         jnp.array(0.0),
         jnp.zeros((3,)),
         1.0,
+        rescaling,
+        grad_tol=1e-8,
+        loss_tol=-1 + 1e-8,
         max_iter=max_iter,
     )
     assert num_iter < max_iter
     scale_f, alpha_f, beta_f, gamma_f, trans_f = unpack_params(par_f)
-    assert jnp.isclose(l2_final, -self_energy, atol=1e-3)
+    assert jnp.isclose(l2_final, -1, atol=1e-2)
     assert jnp.isclose(scale, scale_f, atol=1e-3)
     assert jnp.isclose(alpha, alpha_f, atol=1e-3)
     assert jnp.isclose(beta, beta_f, atol=1e-3)
@@ -115,7 +117,7 @@ def test_rigid_opt_rot_scale():
     mu2, cov2 = transform_gmm_rotangles(
         mu, cov, scale, alpha, beta, gamma, trans
     )
-
+    rescaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
     max_iter = 100
     par_f, (_, _, num_iter) = optimize_single_scale(
         mu2,
@@ -130,6 +132,8 @@ def test_rigid_opt_rot_scale():
         jnp.array(0.0),
         jnp.zeros((3,)),
         1.0,
+        rescaling,
+        loss_tol=-1 + 1e-8,
         max_iter=max_iter,
     )
 
@@ -154,6 +158,7 @@ def test_rigid_opt_rot_scale_trans():
     mu2, cov2 = transform_gmm_rotangles(
         mu, cov, scale, alpha, beta, gamma, trans
     )
+    rescaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
 
     max_iter = 100
     par_f, (_, _, num_iter) = optimize_single_scale(
@@ -169,6 +174,8 @@ def test_rigid_opt_rot_scale_trans():
         jnp.array(0.0),
         jnp.zeros((3,)),
         1.0,
+        rescaling,
+        loss_tol=-1 + 1e-8,
         max_iter=max_iter,
     )
 
@@ -194,6 +201,7 @@ def test_rigid_opt_rst_withsave():
     mu2, cov2 = transform_gmm_rotangles(
         mu, cov, scale, alpha, beta, gamma, trans
     )
+    rescaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
 
     max_iter = 100
     par_f1, (_, _, num_iter1) = optimize_single_scale(
@@ -209,6 +217,7 @@ def test_rigid_opt_rst_withsave():
         jnp.array(0.0),
         jnp.zeros((3,)),
         1.0,
+        rescaling,
         max_iter=max_iter,
     )
     with TemporaryDirectory() as save_path:
@@ -225,6 +234,7 @@ def test_rigid_opt_rst_withsave():
             jnp.array(0.0),
             jnp.zeros((3,)),
             1.0,
+            rescaling,
             max_iter=max_iter,
             save_path=save_path,
         )

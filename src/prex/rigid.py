@@ -12,7 +12,7 @@ import numpy
 import optax
 from jax.experimental import io_callback
 from jax.tree_util import Partial
-from jaxtyping import Array, Bool, Float, PyTree
+from jaxtyping import Array, Bool, Float, Int, PyTree
 
 from .dist import l2_distance_gmm_opt
 from .util import rotation_matrix_2d, rotation_matrix_3d
@@ -147,6 +147,7 @@ def _create_optimization_function(
     covs_moving: Float[Array, "m d d"],
     wgts_moving: Float[Array, " m"],
     cov_scaling: float,
+    l2_scaling: float = 1.0,
 ) -> Callable[[Float[Array, " p"]], tuple[Float[Array, ""], dict[str, Array]]]:
 
     # scale covariances for this annealing step
@@ -180,7 +181,7 @@ def _create_optimization_function(
             "gamma": gamma,
             "trans": trans,
         }
-        return dist_l2, aux_data
+        return l2_scaling * dist_l2, aux_data
 
     return loss_l2
 
@@ -193,6 +194,7 @@ def _create_optimization_function(
         13,
         14,
         15,
+        16,
     ),
 )
 def optimize_single_scale(
@@ -208,6 +210,7 @@ def optimize_single_scale(
     gamma: Float[Array, ""],
     trans: Float[Array, " d"],
     cov_scaling: float,
+    l2_scaling: float = 1.0,
     grad_tol: float = 1e-6,
     loss_tol: float = 1e-8,
     max_iter: int = 100,
@@ -222,6 +225,7 @@ def optimize_single_scale(
         covs_moving,
         wgts_moving,
         cov_scaling,
+        l2_scaling,
     )
 
     def loss_func_noaux(pars: Float[Array, " p"]) -> Float[Array, ""]:
@@ -237,13 +241,12 @@ def optimize_single_scale(
             PyTree,
             Float[Array, ""],
             Float[Array, ""],
-            Float[Array, ""],
             int,
         ],
     ) -> Bool:
-        _, _, grad_norm, prev_loss, curr_loss, num_iter = x
+        _, _, grad_norm, curr_loss, num_iter = x
         grad_high = grad_norm > grad_tol
-        loss_high = jnp.abs(curr_loss - prev_loss) > loss_tol
+        loss_high = curr_loss > loss_tol
         grad_loss = jnp.logical_and(grad_high, loss_high)
         return jnp.logical_and(grad_loss, num_iter < max_iter)
 
@@ -255,7 +258,6 @@ def optimize_single_scale(
                 PyTree,
                 Float[Array, ""],
                 Float[Array, ""],
-                Float[Array, ""],
                 int,
             ],
         ) -> tuple[
@@ -263,10 +265,9 @@ def optimize_single_scale(
             PyTree,
             Float[Array, ""],
             Float[Array, ""],
-            Float[Array, ""],
             int,
         ]:
-            params, opt_state, _, _, prev_loss, num_iter = x
+            params, opt_state, _, _, num_iter = x
             loss, grads = jax.value_and_grad(loss_func_noaux)(params)
             grad_norm = jnp.linalg.norm(grads)
             updates, opt_state = optimizer.update(
@@ -280,7 +281,7 @@ def optimize_single_scale(
             params: Array = optax.apply_updates(
                 params, updates
             )  # pyright: ignore[reportAssignmentType]
-            return (params, opt_state, grad_norm, prev_loss, loss, num_iter + 1)
+            return (params, opt_state, grad_norm, loss, num_iter + 1)
 
     else:
 
@@ -296,7 +297,6 @@ def optimize_single_scale(
                 PyTree,
                 Float[Array, ""],
                 Float[Array, ""],
-                Float[Array, ""],
                 int,
             ],
         ) -> tuple[
@@ -304,10 +304,9 @@ def optimize_single_scale(
             PyTree,
             Float[Array, ""],
             Float[Array, ""],
-            Float[Array, ""],
             int,
         ]:
-            params, opt_state, _, _, prev_loss, num_iter = x
+            params, opt_state, _, _, num_iter = x
             (loss, aux_data), grads = jax.value_and_grad(
                 loss_func, has_aux=True
             )(params)
@@ -324,21 +323,122 @@ def optimize_single_scale(
             params: Array = optax.apply_updates(
                 params, updates
             )  # pyright: ignore[reportAssignmentType]
-            return (params, opt_state, grad_norm, prev_loss, loss, num_iter + 1)
+            return (params, opt_state, grad_norm, loss, num_iter + 1)
 
-    par_f, opt_state, grad_norm, _, final_loss, num_iter = jax.lax.while_loop(
+    par_f, opt_state, grad_norm, final_loss, num_iter = jax.lax.while_loop(
         keep_stepping,
         take_step,
         (
             init_pars,
             opt_state,
             jnp.array(jnp.inf),
-            jnp.array(0.0),
             jnp.array(jnp.inf),
             0,
         ),
     )
     return par_f, (grad_norm, final_loss, num_iter)
+
+
+@Partial(
+    jax.jit,
+    static_argnums=(
+        11,
+        12,
+        13,
+        14,
+    ),
+)
+def optimize_single_scale_fixediter(
+    means_fixed: Float[Array, "f d"],
+    covs_fixed: Float[Array, "f d d"],
+    wgts_fixed: Float[Array, " f"],
+    means_moving: Float[Array, "m d"],
+    covs_moving: Float[Array, "m d d"],
+    wgts_moving: Float[Array, " m"],
+    scale: Float[Array, ""],
+    alpha: Float[Array, ""],
+    beta: Float[Array, ""],
+    gamma: Float[Array, ""],
+    trans: Float[Array, " d"],
+    cov_scaling: float,
+    l2_scaling: float,
+    num_iter: int,
+    save_path: str | None = None,
+) -> tuple[Float[Array, " p"], Float[Array, " {num_iter}"]]:
+    init_pars = pack_params(scale, alpha, beta, gamma, trans)
+    loss_func = _create_optimization_function(
+        means_fixed,
+        covs_fixed,
+        wgts_fixed,
+        means_moving,
+        covs_moving,
+        wgts_moving,
+        cov_scaling,
+        l2_scaling,
+    )
+
+    def loss_func_noaux(pars: Float[Array, " p"]) -> Float[Array, ""]:
+        loss_val, _ = loss_func(pars)
+        return loss_val
+
+    optimizer = optax.lbfgs()
+    opt_state = optimizer.init(init_pars)
+
+    if save_path is None:
+
+        def take_step(
+            x: tuple[Array, PyTree],
+            iter_num: Int[Array, ""],
+        ) -> tuple[tuple[Array, PyTree], Float[Array, ""]]:
+            params, opt_state = x
+            loss, grads = jax.value_and_grad(loss_func_noaux)(params)
+            updates, opt_state = optimizer.update(
+                grads,
+                opt_state,
+                params,
+                value=loss,
+                grad=grads,
+                value_fn=loss_func_noaux,
+            )
+            params: Array = optax.apply_updates(
+                params, updates
+            )  # pyright: ignore[reportAssignmentType]
+            return (params, opt_state), loss
+
+    else:
+
+        def save_step_data(aux_data: dict[str, Array], iter_num: int) -> None:
+            numpy.savez(
+                os.path.join(save_path, f"{iter_num:05d}.npz"),
+                **aux_data,  # pyright: ignore[reportArgumentType]
+            )
+
+        def take_step(
+            x: tuple[Array, PyTree],
+            iter_num: Int[Array, ""],
+        ) -> tuple[tuple[Array, PyTree], Float[Array, ""]]:
+            params, opt_state = x
+            (loss, aux_data), grads = jax.value_and_grad(
+                loss_func, has_aux=True
+            )(params)
+            io_callback(save_step_data, None, aux_data, iter_num)
+            updates, opt_state = optimizer.update(
+                grads,
+                opt_state,
+                params,
+                value=loss,
+                grad=grads,
+                value_fn=loss_func_noaux,
+            )
+            params: Array = optax.apply_updates(
+                params, updates
+            )  # pyright: ignore[reportAssignmentType]
+            return (params, opt_state), loss
+
+    (par_f, opt_state), losses = jax.lax.scan(
+        take_step, (init_pars, opt_state), jnp.arange(num_iter)
+    )
+    return par_f, losses
 
 
 def optimize_multi_scale(
@@ -354,6 +454,7 @@ def optimize_multi_scale(
     gamma: Float[Array, ""],
     trans: Float[Array, " d"],
     cov_scalings: tuple[float, ...],
+    l2_scaling: float,
     grad_tol: float = 1e-6,
     loss_tol: float = 1e-8,
     max_iter: int = 100,
@@ -385,6 +486,7 @@ def optimize_multi_scale(
         means_moving,
         covs_moving,
         wgts_moving,
+        l2_scaling=l2_scaling,
         grad_tol=grad_tol,
         loss_tol=loss_tol,
         max_iter=max_iter,

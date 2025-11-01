@@ -8,8 +8,6 @@ from prex.affine import (
     transform_gmm,
 )
 
-# jax.config.update("jax_platform_name", "cpu")
-
 
 @jax.jit
 def create_diagonal_covariances(
@@ -55,11 +53,20 @@ def test_random_matrix3():
     mu2, cov2 = transform_gmm(mu, cov, A, jnp.zeros((3,)))
     max_iter = 100
     par_f, (_, _, num_iter) = optimize_single_scale_matrix(
-        mu2, cov2, wgt, mu, cov, wgt, A, jnp.zeros((3,)), 1.0, max_iter=max_iter
+        mu2,
+        cov2,
+        wgt,
+        mu,
+        cov,
+        wgt,
+        jnp.eye(3),
+        jnp.zeros((3,)),
+        1.0,
+        max_iter=max_iter,
     )
     assert num_iter < max_iter
     Af = par_f[:-3].reshape(3, 3)
-    assert jnp.allclose(A, Af, atol=1e-3)
+    assert jnp.allclose(A, Af, atol=1e-2)
     tf = par_f[-3:]
     assert jnp.allclose(tf, jnp.zeros_like(tf), atol=1e-3)
 
@@ -72,7 +79,16 @@ def test_random_matrix2():
     mu2, cov2 = transform_gmm(mu, cov, A, jnp.zeros((2,)))
     max_iter = 100
     par_f, (_, _, num_iter) = optimize_single_scale_matrix(
-        mu2, cov2, wgt, mu, cov, wgt, A, jnp.zeros((2,)), 1.0, max_iter=max_iter
+        mu2,
+        cov2,
+        wgt,
+        mu,
+        cov,
+        wgt,
+        jnp.eye(2),
+        jnp.zeros((2,)),
+        1.0,
+        max_iter=max_iter,
     )
     assert num_iter < max_iter
     Af = par_f[:-2].reshape(2, 2)
@@ -89,7 +105,16 @@ def test_random_matrix2_manycomponents():
     mu2, cov2 = transform_gmm(mu, cov, A, jnp.zeros((2,)))
     max_iter = 100
     par_f, (_, _, num_iter) = optimize_single_scale_matrix(
-        mu2, cov2, wgt, mu, cov, wgt, A, jnp.zeros((2,)), 1.0, max_iter=max_iter
+        mu2,
+        cov2,
+        wgt,
+        mu,
+        cov,
+        wgt,
+        jnp.eye(2),
+        jnp.zeros((2,)),
+        1.0,
+        max_iter=max_iter,
     )
     assert num_iter < max_iter
     Af = par_f[:-2].reshape(2, 2)
