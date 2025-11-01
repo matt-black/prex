@@ -29,6 +29,13 @@ dependencies = [
     "optax",
 ]
 
+[project.optional-dependencies]
+nb = [
+    "ipympl>=0.9.8",
+    "jupyterlab>=4.4.10",
+    "matplotlib>=3.10.7",
+]
+
 [dependency-groups]
 dev = [
     "black>=25.1.0,<26",
