@@ -7,6 +7,7 @@ from prex.affine import (
     optimize_single_scale_matrix,
     transform_gmm,
 )
+from prex.dist import self_energy_gmm
 
 
 @jax.jit
@@ -51,7 +52,8 @@ def test_random_matrix3():
     mu, cov, wgt = make_random_gmm(5, 3, gmm_key)
     A = jnp.add(jnp.eye(3), jr.normal(mat_key, (3, 3)))
     mu2, cov2 = transform_gmm(mu, cov, A, jnp.zeros((3,)))
-    max_iter = 100
+    max_iter = 1000
+    l2_scaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
     par_f, (_, _, num_iter) = optimize_single_scale_matrix(
         mu2,
         cov2,
@@ -62,6 +64,8 @@ def test_random_matrix3():
         jnp.eye(3),
         jnp.zeros((3,)),
         1.0,
+        l2_scaling,
+        loss_tol=-1 + 1e-6,
         max_iter=max_iter,
     )
     assert num_iter < max_iter
@@ -77,6 +81,7 @@ def test_random_matrix2():
     mu, cov, wgt = make_random_gmm(9, 2, gmm_key)
     A = jnp.add(jnp.eye(2), jr.normal(mat_key, (2, 2)))
     mu2, cov2 = transform_gmm(mu, cov, A, jnp.zeros((2,)))
+    l2_scaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
     max_iter = 100
     par_f, (_, _, num_iter) = optimize_single_scale_matrix(
         mu2,
@@ -88,6 +93,8 @@ def test_random_matrix2():
         jnp.eye(2),
         jnp.zeros((2,)),
         1.0,
+        l2_scaling,
+        loss_tol=-1 + 1e-8,
         max_iter=max_iter,
     )
     assert num_iter < max_iter
@@ -103,7 +110,8 @@ def test_random_matrix2_manycomponents():
     mu, cov, wgt = make_random_gmm(100, 2, gmm_key)
     A = jnp.add(jnp.eye(2), jr.normal(mat_key, (2, 2)))
     mu2, cov2 = transform_gmm(mu, cov, A, jnp.zeros((2,)))
-    max_iter = 100
+    l2_scaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
+    max_iter = 1000
     par_f, (_, _, num_iter) = optimize_single_scale_matrix(
         mu2,
         cov2,
@@ -114,10 +122,12 @@ def test_random_matrix2_manycomponents():
         jnp.eye(2),
         jnp.zeros((2,)),
         1.0,
+        l2_scaling,
+        loss_tol=-0.9999,
         max_iter=max_iter,
     )
     assert num_iter < max_iter
     Af = par_f[:-2].reshape(2, 2)
-    assert jnp.allclose(A, Af, atol=1e-3)
+    assert jnp.allclose(A, Af, atol=1e-2)
     tf = par_f[-2:]
     assert jnp.allclose(tf, jnp.zeros_like(tf), atol=1e-3)

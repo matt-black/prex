@@ -253,6 +253,7 @@ def _create_optimization_function(
     covs_moving: Float[Array, "m d d"],
     wgts_moving: Float[Array, " m"],
     cov_scaling: float,
+    l2_scaling: float,
 ) -> Callable[[Float[Array, " p"]], tuple[Float[Array, ""], dict[str, Array]]]:
 
     # scale covariances for this annealing step
@@ -315,7 +316,7 @@ def _create_optimization_function(
             "shears": jnp.array([k_xy, k_xz, k_yx, k_yz, k_zx, k_zy]),
             "trans": trans,
         }
-        return dist_l2, aux_data
+        return l2_scaling * dist_l2, aux_data
 
     return loss_l2
 
@@ -328,6 +329,7 @@ def _create_optimization_function(
         21,
         22,
         23,
+        24,
     ),
 )
 def optimize_single_scale(
@@ -351,6 +353,7 @@ def optimize_single_scale(
     k_zy: Float[Array, ""],
     trans: Float[Array, " d"],
     cov_scaling: float,
+    l2_scaling: float,
     grad_tol: float = 1e-6,
     loss_tol: float = 1e-8,
     max_iter: int = 100,
@@ -379,6 +382,7 @@ def optimize_single_scale(
         covs_moving,
         wgts_moving,
         cov_scaling,
+        l2_scaling,
     )
 
     def loss_func_noaux(pars: Float[Array, " p"]) -> Float[Array, ""]:
@@ -394,13 +398,12 @@ def optimize_single_scale(
             PyTree,
             Float[Array, ""],
             Float[Array, ""],
-            Float[Array, ""],
             int,
         ],
     ) -> Bool:
-        _, _, grad_norm, prev_loss, curr_loss, num_iter = x
+        _, _, grad_norm, curr_loss, num_iter = x
         grad_high = grad_norm > grad_tol
-        loss_high = jnp.abs(curr_loss - prev_loss) > loss_tol
+        loss_high = curr_loss > loss_tol
         grad_loss = jnp.logical_and(grad_high, loss_high)
         return jnp.logical_and(grad_loss, num_iter < max_iter)
 
@@ -412,7 +415,6 @@ def optimize_single_scale(
                 PyTree,
                 Float[Array, ""],
                 Float[Array, ""],
-                Float[Array, ""],
                 int,
             ],
         ) -> tuple[
@@ -420,10 +422,9 @@ def optimize_single_scale(
             PyTree,
             Float[Array, ""],
             Float[Array, ""],
-            Float[Array, ""],
             int,
         ]:
-            params, opt_state, _, _, prev_loss, num_iter = x
+            params, opt_state, _, _, num_iter = x
             loss, grads = jax.value_and_grad(loss_func_noaux)(params)
             grad_norm = jnp.linalg.norm(grads)
             updates, opt_state = optimizer.update(
@@ -437,7 +438,7 @@ def optimize_single_scale(
             params: Array = optax.apply_updates(
                 params, updates
             )  # pyright: ignore[reportAssignmentType]
-            return (params, opt_state, grad_norm, prev_loss, loss, num_iter + 1)
+            return (params, opt_state, grad_norm, loss, num_iter + 1)
 
     else:
 
@@ -453,7 +454,6 @@ def optimize_single_scale(
                 PyTree,
                 Float[Array, ""],
                 Float[Array, ""],
-                Float[Array, ""],
                 int,
             ],
         ) -> tuple[
@@ -461,10 +461,9 @@ def optimize_single_scale(
             PyTree,
             Float[Array, ""],
             Float[Array, ""],
-            Float[Array, ""],
             int,
         ]:
-            params, opt_state, _, _, prev_loss, num_iter = x
+            params, opt_state, _, _, num_iter = x
             (loss, aux_data), grads = jax.value_and_grad(
                 loss_func, has_aux=True
             )(params)
@@ -481,16 +480,15 @@ def optimize_single_scale(
             params: Array = optax.apply_updates(
                 params, updates
             )  # pyright: ignore[reportAssignmentType]
-            return (params, opt_state, grad_norm, prev_loss, loss, num_iter + 1)
+            return (params, opt_state, grad_norm, loss, num_iter + 1)
 
-    par_f, opt_state, grad_norm, _, final_loss, num_iter = jax.lax.while_loop(
+    par_f, opt_state, grad_norm, final_loss, num_iter = jax.lax.while_loop(
         keep_stepping,
         take_step,
         (
             init_pars,
             opt_state,
             jnp.array(jnp.inf),
-            jnp.array(0.0),
             jnp.array(jnp.inf),
             0,
         ),
@@ -519,6 +517,7 @@ def optimize_multi_scale(
     k_zy: Float[Array, ""],
     trans: Float[Array, " d"],
     cov_scalings: tuple[float, ...],
+    l2_scaling: float,
     grad_tol: float = 1e-6,
     loss_tol: float = 1e-8,
     max_iter: int = 100,
@@ -550,6 +549,7 @@ def optimize_multi_scale(
         means_moving,
         covs_moving,
         wgts_moving,
+        l2_scaling=l2_scaling,
         grad_tol=grad_tol,
         loss_tol=loss_tol,
         max_iter=max_iter,
@@ -652,6 +652,7 @@ def _create_optimization_function_matrix(
         10,
         11,
         12,
+        13,
     ),
 )
 def optimize_single_scale_matrix(
@@ -664,6 +665,7 @@ def optimize_single_scale_matrix(
     matrix: Float[Array, "d d"],
     trans: Float[Array, " d"],
     cov_scaling: float,
+    l2_scaling: float,
     grad_tol: float = 1e-6,
     loss_tol: float = 1e-8,
     max_iter: int = 100,
