@@ -159,3 +159,66 @@ def l2_distance_gmm_opt(
         wgts_moving,
     )
     return self_energy - 2 * cross_energy
+
+
+def kullback_leibler_gaussian(
+    mu_p: Float[Array, " d"],
+    cov_p: Float[Array, "d d"],
+    mu_q: Float[Array, " d"],
+    cov_q: Float[Array, "d d"],
+) -> Float[Array, ""]:
+    """Calculate the Kullback-Leibler divergence between two multivariate Gaussians.
+
+    Args:
+        mu_p (Float[Array, " d"]): mean vector of reference
+        cov_p (Float[Array, "d d"]): covariance matrix of reference
+        mu_q (Float[Array, " d"]): mean vector of other distribution
+        cov_q (Float[Array, "d d"]): covariance matrix of other
+
+    Returns:
+        Float[Array, ""]: scalar KL-divergence
+    """
+    cov_q_inv = jnp.linalg.inv(cov_q)
+    n_dim = mu_p.shape[0]
+    return 0.5 * (
+        jnp.log(jnp.linalg.det(cov_q) / jnp.linalg.det(cov_p))
+        - n_dim
+        + jnp.trace(cov_q_inv @ cov_p)
+        + (mu_q - mu_p).T @ cov_q_inv @ (mu_q - mu_p)
+    )
+
+
+def kullback_leibler_gmm_approx(
+    mu_p: Float[Array, "n d"],
+    cov_p: Float[Array, "n d d"],
+    wgt_p: Float[Array, " n"],
+    mu_q: Float[Array, "m d"],
+    cov_q: Float[Array, "m d d"],
+    wgt_q: Float[Array, " m"],
+) -> Float[Array, ""]:
+    """Calculate the approximate Kullback-Leibler divergence between two multi-component multivariate Gaussian mixture distributions.
+
+    Args:
+        mu_p (Float[Array, "n d"]): mean vectors of reference distribution components
+        cov_p (Float[Array, "n d d"]): covariance matrices of reference distribution components
+        wgt_p (Float[Array, " n"]): weights of components of reference
+        mu_q (Float[Array, "n d"]): mean vectors of other distribution components
+        cov_q (Float[Array, "n d d"]): covariance matrices of reference distribution components
+        wgt_q (Float[Array, " n"]): weights of components of other
+
+    Returns:
+        Float[Array, ""]: scalar KL-divergence
+    """
+    pairwise_kl = jax.vmap(
+        lambda mp, cp, wp: jax.vmap(
+            lambda mq, cq, wq: jnp.add(
+                kullback_leibler_gaussian(mp, cp, mq, cq), jnp.log(wp / wq)
+            ),
+            (0, 0, 0),
+            0,
+        )(mu_q, cov_q, wgt_q),
+        (0, 0, 0),
+        0,
+    )(mu_p, cov_p, wgt_p)
+    min_kl = jnp.amin(pairwise_kl, axis=1)
+    return jnp.sum(jnp.multiply(wgt_p, min_kl))

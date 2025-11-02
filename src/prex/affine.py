@@ -607,6 +607,7 @@ def _create_optimization_function_matrix(
     covs_moving: Float[Array, "m d d"],
     wgts_moving: Float[Array, " m"],
     cov_scaling: float,
+    l2_scaling: float,
 ) -> Callable[[Float[Array, " p"]], tuple[Float[Array, ""], dict[str, Array]]]:
 
     _, n_dim = means_fixed.shape
@@ -639,7 +640,7 @@ def _create_optimization_function_matrix(
             "matrix": matrix,
             "trans": trans,
         }
-        return dist_l2, aux_data
+        return l2_scaling * dist_l2, aux_data
 
     return loss_l2
 
@@ -680,6 +681,7 @@ def optimize_single_scale_matrix(
         covs_moving,
         wgts_moving,
         cov_scaling,
+        l2_scaling,
     )
 
     def loss_func_noaux(pars: Float[Array, " p"]) -> Float[Array, ""]:
