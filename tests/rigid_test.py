@@ -5,11 +5,13 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from prex.dist import self_energy_gmm
+from prex.dist import self_energy_gmm, self_energy_gmm_spherical
 from prex.rigid import (
     optimize_single_scale,
+    optimize_single_scale_spherical,
     transform_gmm,
     transform_gmm_rotangles,
+    transform_means_rotangles,
     unpack_params,
 )
 from prex.util import rotation_matrix_3d
@@ -70,10 +72,10 @@ def test_rigid_opt_rot():
     alpha = jnp.array(jnp.pi / 8)
     beta = jnp.array(0.0)
     gamma = jnp.array(jnp.pi / 10)
-    trans = jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32)
+    trans = jnp.array([0.0, 0.0, 0.0])
     scale = jnp.array(1.0)
     mu2, cov2 = transform_gmm_rotangles(
-        mu, cov, scale, alpha, beta, gamma, trans
+        mu, cov, scale, alpha, beta, gamma, trans, 3
     )
     rescaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
     max_iter = 100
@@ -112,10 +114,10 @@ def test_rigid_opt_rot_scale():
     alpha = jnp.array(jnp.pi / 8)
     beta = jnp.array(0.0)
     gamma = jnp.array(jnp.pi / 10)
-    trans = jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32)
+    trans = jnp.array([0.0, 0.0, 0.0])
     scale = jnp.array(2.0)
     mu2, cov2 = transform_gmm_rotangles(
-        mu, cov, scale, alpha, beta, gamma, trans
+        mu, cov, scale, alpha, beta, gamma, trans, 3
     )
     rescaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
     max_iter = 100
@@ -153,10 +155,10 @@ def test_rigid_opt_rot_scale_trans():
     alpha = jnp.array(jnp.pi / 8)
     beta = jnp.array(0.0)
     gamma = jnp.array(jnp.pi / 10)
-    trans = jnp.array([0.5, 0.5, 0.5], dtype=jnp.float32)
+    trans = jnp.array([0.5, 0.5, 0.5])
     scale = jnp.array(2.0)
     mu2, cov2 = transform_gmm_rotangles(
-        mu, cov, scale, alpha, beta, gamma, trans
+        mu, cov, scale, alpha, beta, gamma, trans, 3
     )
     rescaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
 
@@ -196,10 +198,10 @@ def test_rigid_opt_rst_withsave():
     alpha = jnp.array(jnp.pi / 8)
     beta = jnp.array(0.0)
     gamma = jnp.array(jnp.pi / 10)
-    trans = jnp.array([0.5, 0.5, 0.5], dtype=jnp.float32)
+    trans = jnp.array([0.5, 0.5, 0.5])
     scale = jnp.array(2.0)
     mu2, cov2 = transform_gmm_rotangles(
-        mu, cov, scale, alpha, beta, gamma, trans
+        mu, cov, scale, alpha, beta, gamma, trans, 3
     )
     rescaling = 1 / self_energy_gmm(mu2, cov2, wgt).item()
 
@@ -240,3 +242,44 @@ def test_rigid_opt_rst_withsave():
         )
     assert num_iter1 == num_iter2
     assert jnp.allclose(par_f1, par_f2)
+
+
+def test_rigid_opt_rot_scale_trans_spherical():
+    key = jr.PRNGKey(1029)
+    n_dim = 2
+    mu, _, wgt = make_random_gmm(5, n_dim, key)
+    # define fwd transform
+    alpha = jnp.array(jnp.pi / 8)
+    beta = jnp.array(0.0)
+    gamma = jnp.array(jnp.pi / 10)
+    trans = jnp.array(
+        [
+            0.5,
+        ]
+        * n_dim
+    )
+    scale = jnp.array(2.0)
+    mu2 = transform_means_rotangles(mu, scale, alpha, beta, gamma, trans, n_dim)
+    rescaling = 1 / self_energy_gmm_spherical(mu2, wgt, 1.0, n_dim).item()
+    max_iter = 100
+    par_f, (_, _, num_iter) = optimize_single_scale_spherical(
+        mu2,
+        wgt,
+        mu,
+        wgt,
+        jnp.array(1.0),
+        jnp.array(0.0),
+        jnp.array(0.0),
+        jnp.array(0.0),
+        jnp.zeros((n_dim,)),
+        var_fixed=1.0,
+        var_moving=1.0,
+        l2_scaling=rescaling,
+        loss_tol=-1 + 1e-8,
+        max_iter=max_iter,
+    )
+    assert num_iter < max_iter
+    scale_f, alpha_f, _, _, trans_f = unpack_params(par_f)
+    assert jnp.isclose(scale, scale_f, atol=1e-3)
+    assert jnp.isclose(alpha, alpha_f, atol=1e-3)
+    assert jnp.allclose(trans, trans_f, atol=1e-2)
