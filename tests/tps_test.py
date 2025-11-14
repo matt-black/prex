@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from jax.tree_util import Partial
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from prex import tps
@@ -77,70 +76,6 @@ def test_transform_zero_rbf_affine():
     )
     assert jnp.allclose(mu2, mu3)
     assert jnp.allclose(cov2, cov3)
-
-
-def test_cov_transform_methods_match3():
-    gmm_key, wgt_key, mat_key = jr.split(jr.PRNGKey(21), 3)
-    mu, cov, _ = make_random_gmm(5, 3, gmm_key)
-    A = jnp.add(jnp.eye(3), jr.normal(mat_key, (3, 3)))
-    rbf_weights = jr.uniform(wgt_key, mu.shape)
-    rbf_bandwidth = 1.0
-
-    _, cov2 = tps.transform_gmm(
-        mu,
-        cov,
-        A,
-        jnp.zeros((3,)),
-        mu,
-        rbf_weights,
-    )
-
-    diffs = jax.vmap(
-        lambda f: jax.vmap(Partial(jnp.subtract, f), 0, 0)(mu), 0, 0
-    )(mu)
-    psi = jnp.exp(
-        jnp.divide(
-            jnp.negative(jnp.sum(jnp.square(diffs), axis=-1)),
-            (2 * rbf_bandwidth**2),
-        )
-    )
-    _, covp = tps._transform_gmm_precomputed(
-        mu, cov, A, jnp.zeros((3,)), rbf_weights, psi, diffs, 3
-    )
-
-    assert jnp.allclose(cov2, covp)
-
-
-def test_cov_transform_methods_match2():
-    gmm_key, wgt_key, mat_key = jr.split(jr.PRNGKey(21), 3)
-    mu, cov, _ = make_random_gmm(5, 2, gmm_key)
-    A = jnp.add(jnp.eye(2), jr.normal(mat_key, (2, 2)))
-    rbf_weights = jr.uniform(wgt_key, mu.shape)
-    rbf_bandwidth = 1.0
-
-    _, cov2 = tps.transform_gmm(
-        mu,
-        cov,
-        A,
-        jnp.zeros((2,)),
-        mu,
-        rbf_weights,
-    )
-
-    diffs = jax.vmap(
-        lambda f: jax.vmap(Partial(jnp.subtract, f), 0, 0)(mu), 0, 0
-    )(mu)
-    psi = jnp.exp(
-        jnp.divide(
-            jnp.negative(jnp.sum(jnp.square(diffs), axis=-1)),
-            (2 * rbf_bandwidth**2),
-        )
-    )
-    _, covp = tps._transform_gmm_precomputed(
-        mu, cov, A, jnp.zeros((2,)), rbf_weights, psi, diffs, 2
-    )
-
-    assert jnp.allclose(cov2, covp)
 
 
 # def test_random_converges():

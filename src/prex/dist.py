@@ -6,14 +6,6 @@ from jax.scipy.stats import multivariate_normal
 from jax.tree_util import Partial
 from jaxtyping import Array, Float
 
-__all__ = [
-    "mixture_component_overlap",
-    "self_energy_gmm",
-    "cross_energy_gmms",
-    "l2_distance_gmm",
-    "l2_distance_gmm_opt",
-]
-
 
 def mixture_component_overlap(
     mean1: Float[Array, " d"],
@@ -596,6 +588,34 @@ def kullback_leibler_gaussian(
     )
 
 
+@Partial(jax.jit, static_argnums=(2, 3, 4))
+def kullback_leibler_gaussian_spherical(
+    mu_p: Float[Array, " d"],
+    mu_q: Float[Array, " d"],
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+) -> Float[Array, ""]:
+    cov_inv_q = jnp.diag(
+        jnp.array(
+            [
+                1.0 / var_q,
+            ]
+            * n_dim
+        )
+    )
+    diff = mu_q - mu_p
+    return (
+        0.5
+        * (
+            jnp.log(var_q**n_dim / var_p**n_dim)
+            - n_dim
+            + n_dim * (var_p / var_q)
+            + diff[jnp.newaxis, :] @ cov_inv_q @ diff[:, jnp.newaxis]
+        )[0]
+    )
+
+
 def kullback_leibler_gmm_approx(
     mu_p: Float[Array, "n d"],
     cov_p: Float[Array, "n d d"],
@@ -628,5 +648,47 @@ def kullback_leibler_gmm_approx(
         (0, 0, 0),
         0,
     )(mu_p, cov_p, wgt_p)
+    min_kl = jnp.amin(pairwise_kl, axis=1)
+    return jnp.sum(jnp.multiply(wgt_p, min_kl))
+
+
+@Partial(jax.jit, static_argnums=(4, 5, 6))
+def kullback_leibler_gmm_approx_spherical(
+    mu_p: Float[Array, "n d"],
+    wgt_p: Float[Array, " n"],
+    mu_q: Float[Array, "m d"],
+    wgt_q: Float[Array, " m"],
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+) -> Float[Array, ""]:
+    """Calculate the approximate Kullback-Leibler divergence between two multi-component multivariate Gaussian mixture distributions.
+
+    Args:
+        mu_p (Float[Array, "n d"]): mean vectors of reference distribution components
+        cov_p (Float[Array, "n d d"]): covariance matrices of reference distribution components
+        wgt_p (Float[Array, " n"]): weights of components of reference
+        mu_q (Float[Array, "n d"]): mean vectors of other distribution components
+        cov_q (Float[Array, "n d d"]): covariance matrices of reference distribution components
+        wgt_q (Float[Array, " n"]): weights of components of other
+
+    Returns:
+        Float[Array, ""]: scalar KL-divergence
+    """
+    kl_fun = Partial(
+        kullback_leibler_gaussian_spherical,
+        var_p=var_p,
+        var_q=var_q,
+        n_dim=n_dim,
+    )
+    pairwise_kl = jax.vmap(
+        lambda mp, wp: jax.vmap(
+            lambda mq, wq: jnp.add(kl_fun(mp, mq), jnp.log(wp / wq)),
+            (0, 0),
+            0,
+        )(mu_q, wgt_q),
+        (0, 0),
+        0,
+    )(mu_p, wgt_p)
     min_kl = jnp.amin(pairwise_kl, axis=1)
     return jnp.sum(jnp.multiply(wgt_p, min_kl))

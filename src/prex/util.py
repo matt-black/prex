@@ -2,13 +2,6 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-__all__ = [
-    "sqdist",
-    "decompose_affine_transform",
-    "rotation_matrix_2d",
-    "rotation_matrix_3d",
-]
-
 
 def sqdist(
     x: Float[Array, "n d"], y: Float[Array, "m d"]

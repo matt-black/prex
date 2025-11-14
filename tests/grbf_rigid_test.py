@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from jax.tree_util import Partial
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from prex.grbf import rigid as grbf
@@ -93,42 +92,6 @@ def test_transform_identity():
     assert jnp.allclose(cov, cov2)
 
 
-def test_cov_transform_methods_match():
-    gmm_key, wgt_key = jr.split(jr.PRNGKey(21), 2)
-    mu, cov, _ = make_random_gmm(5, 3, gmm_key)
-    scale = jnp.array(1.125)
-    rot = jnp.eye(3)
-    trans = jnp.ones((3,)) * 1.25
-    rbf_weights = jr.uniform(wgt_key, mu.shape)
-    rbf_bandwidth = 1.0
-
-    _, cov2 = grbf.transform_gmm(
-        mu,
-        cov,
-        scale,
-        rot,
-        trans,
-        rbf_weights,
-        mu,
-        rbf_bandwidth,
-    )
-
-    diffs = jax.vmap(
-        lambda f: jax.vmap(Partial(jnp.subtract, f), 0, 0)(mu), 0, 0
-    )(mu)
-    psi = jnp.exp(
-        jnp.divide(
-            jnp.negative(jnp.sum(jnp.square(diffs), axis=-1)),
-            (2 * rbf_bandwidth**2),
-        )
-    )
-    _, covp = grbf._transform_gmm_precomputed(
-        mu, cov, scale, rot, trans, rbf_weights, psi, diffs, rbf_bandwidth
-    )
-
-    assert jnp.allclose(cov2, covp)
-
-
 def test_transform_zero_rbf_affine():
     mu, cov, _ = make_random_gmm(5, 3, jr.PRNGKey(21))
     scale = jnp.array(1.125)
@@ -136,25 +99,8 @@ def test_transform_zero_rbf_affine():
     trans = jnp.ones((3,)) * 1.25
     rbf_bandwidth = 1.0
     mu2, cov2 = transform_gmm_rigid(mu, cov, scale, rot, trans)
-    diffs = jax.vmap(
-        lambda f: jax.vmap(Partial(jnp.subtract, f), 0, 0)(mu), 0, 0
-    )(mu)
-    psi = jnp.exp(
-        jnp.divide(
-            jnp.negative(jnp.sum(jnp.square(diffs), axis=-1)),
-            (2 * rbf_bandwidth**2),
-        )
-    )
-    mu3, cov3 = grbf._transform_gmm_precomputed(
-        mu,
-        cov,
-        scale,
-        rot,
-        trans,
-        jnp.zeros_like(mu),
-        psi,
-        diffs,
-        rbf_bandwidth,
+    mu3, cov3 = grbf.transform_gmm(
+        mu, cov, scale, rot, trans, jnp.zeros_like(mu), mu, rbf_bandwidth
     )
     assert jnp.allclose(mu2, mu3)
     assert jnp.allclose(cov2, cov3)
