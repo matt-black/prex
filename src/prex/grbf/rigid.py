@@ -221,6 +221,45 @@ def transform_means_3d(
     return global_means + local_deformation
 
 
+def initialize_params(
+    n_ctrl_pts: int,
+    n_dim: int,
+    init_scl: Float[Array, ""] | None,
+    init_angles: Float[Array, ""] | Float[Array, " 3"] | None,
+    init_trans: Float[Array, " {n_dim}"] | None,
+) -> Float[Array, " p"]:
+    if init_scl is None:
+        scale = jnp.array(0.0)[None]
+    else:
+        scale = init_scl[None]
+
+    if init_angles is None:
+        alpha = jnp.array(0.0)[None]
+        beta, gamma = alpha.copy(), alpha.copy()
+    else:
+        if n_dim == 2:
+            alpha = init_angles[None]
+            beta, gamma = alpha.copy(), alpha.copy()
+        else:
+            alpha = init_angles[0][None]
+            beta = init_angles[1][None]
+            gamma = init_angles[2][None]
+
+    if init_trans is None:
+        trans = jnp.zeros((n_dim,))
+    else:
+        trans = init_trans
+
+    psi = jnp.zeros((n_ctrl_pts, n_dim)).flatten()
+
+    if n_dim == 2:
+        return jnp.concatenate([scale, alpha, trans, psi], axis=0)
+    elif n_dim == 3:
+        return jnp.concatenate([scale, alpha, beta, gamma, trans, psi])
+    else:
+        raise ValueError("invalid # of dimensions")
+
+
 def unpack_params_2d(
     flat_params: Float[Array, " p"],
 ) -> tuple[

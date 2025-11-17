@@ -27,8 +27,8 @@ def tps_rbf(
 
 @Partial(jax.jit, static_argnums=(1,))
 def _rbf_even(dist: Array, pwr: int) -> Array:
-    d = jnp.where(dist == 0, 1, dist)
-    return jnp.multiply(jnp.power(dist, pwr), jnp.log(d))
+    eps = jnp.finfo(dist.dtype).eps
+    return jnp.multiply(jnp.power(dist, pwr), jnp.log(dist + eps))
 
 
 @Partial(jax.jit, static_argnums=(1,))
@@ -207,4 +207,20 @@ def unpack_params_3d(
 def tps_bending_energy(
     K: Float[Array, "n_ctrl n_ctrl"], wgts: Float[Array, "n_ctrl n_dim"]
 ) -> Float[Array, ""]:
-    return jnp.abs(jnp.trace(wgts.T @ K @ wgts))
+    return jnp.trace(wgts.T @ K @ wgts)
+
+
+def initialize_params(
+    n_ctrl_pts: int,
+    n_dim: int,
+    init_aff: Float[Array, "{n_dim} {n_dim}"] | None,
+    init_trans: Float[Array, " {n_dim}"] | None,
+) -> Float[Array, " p"]:
+    if init_aff is None:
+        init_aff = jnp.eye(n_dim)
+    if init_trans is None:
+        init_trans = jnp.zeros((n_dim,))
+    init_wgt = jnp.zeros((n_ctrl_pts, n_dim))
+    return jnp.concatenate(
+        [init_aff.ravel(), init_trans.ravel(), init_wgt.ravel()], axis=0
+    )

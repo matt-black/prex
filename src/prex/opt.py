@@ -13,6 +13,7 @@ from jaxtyping import Array, Bool, Float
 from . import affine, rigid, tps
 from .dist import (
     kullback_leibler_gmm_approx_spherical,
+    kullback_leibler_gmm_approx_var_spherical,
     l2_distance_gmm_opt_spherical,
 )
 from .grbf import affine as grbfa
@@ -30,13 +31,14 @@ class AlignmentMethod(Enum):
 
 class DistanceFunction(Enum):
     L2 = 1
-    KL = 2
+    KLG = 2
+    KLV = 3
 
 
 class Regularization(Enum):
     NONE = 0
     TPS = 1
-    RIGDE = 2
+    RIDGE = 2
 
 
 type AuxiliaryData = tuple[
@@ -55,9 +57,55 @@ def auxdata_to_npz(aux_data: AuxiliaryData, file_path: str) -> None:
     )
 
 
+def auxdata_with_valid_to_npz(
+    aux_data: AuxiliaryData,
+    dist_valid: Float[Array, ""],
+    regt_valid: Float[Array, ""],
+    file_path: str,
+) -> None:
+    dist, reg_term, params = aux_data
+    numpy.savez(
+        file_path,
+        dist=dist,
+        reg_term=reg_term,
+        params=params,
+        dist_valid=dist_valid,
+        reg_term_valid=regt_valid,
+    )
+
+
 def auxdata_from_npz(file_path: str) -> AuxiliaryData:
     arxiv = numpy.load(file_path)
     return arxiv["dist"], arxiv["reg_term"], arxiv["params"]
+
+
+def auxdata_with_valid_from_npz(
+    file_path: str,
+) -> tuple[AuxiliaryData, numpy.ndarray, numpy.ndarray]:
+    arxiv = numpy.load(file_path)
+    return (
+        (arxiv["dist"], arxiv["reg_term"], arxiv["params"]),
+        arxiv["dist_valid"],
+        arxiv["reg_term_valid"],
+    )
+
+
+def load_history(
+    fldr_path: str, num_iter: int, valid_data: bool
+) -> numpy.ndarray:
+    vecs = []
+    for i in range(num_iter):
+        fpath = path_join(fldr_path, f"{i:05d}.npz")
+        if valid_data:
+            (d, rt, p), dv, rtv = auxdata_with_valid_from_npz(fpath)
+        else:
+            d, rt, p = auxdata_from_npz(fpath)
+            dv, rtv = numpy.array(numpy.nan), numpy.array(numpy.nan)
+        vec = numpy.concatenate(
+            [d[None], rt[None], dv[None], rtv[None], p], axis=0
+        )
+        vecs.append(vec)
+    return numpy.stack(vecs, axis=0)
 
 
 def _make_transform_function_spherical(
@@ -225,18 +273,38 @@ def _make_loss_function_spherical(
     metric: DistanceFunction,
     regularization: RegularizationData,
     l2_scaling: float = 1.0,
+    grbf_bandwidth: float = 1.0,
 ) -> Callable[[Float[Array, " p"]], tuple[Float[Array, ""], AuxiliaryData]]:
     _, n_dim = means_ref.shape
-    transform = _make_transform_function_spherical(means_mov, method, means_ref)
+    transform = _make_transform_function_spherical(
+        means_mov, method, means_ref, grbf_bandwidth
+    )
     reg_type, reg_const = regularization
     if reg_type == Regularization.NONE:
-        if metric == DistanceFunction.KL:
+        if metric == DistanceFunction.KLG:
 
             def loss_function(
                 p: Float[Array, " p"],
             ) -> tuple[Float[Array, ""], AuxiliaryData]:
                 means_trans = transform(p)
                 dist = kullback_leibler_gmm_approx_spherical(
+                    means_ref,
+                    wgts_ref,
+                    means_trans,
+                    wgts_mov,
+                    var_ref,
+                    var_mov,
+                    n_dim,
+                )
+                return dist, (dist, jnp.array(0.0), p)
+
+        elif metric == DistanceFunction.KLV:
+
+            def loss_function(
+                p: Float[Array, " p"],
+            ) -> tuple[Float[Array, ""], AuxiliaryData]:
+                means_trans = transform(p)
+                dist = kullback_leibler_gmm_approx_var_spherical(
                     means_ref,
                     wgts_ref,
                     means_trans,
@@ -323,7 +391,7 @@ def _make_loss_function_spherical(
             calculate_bending_energy = Partial(
                 tps.tps_bending_energy, tps.tps_rbf(means_ref, means_ref)
             )
-            if metric == DistanceFunction.KL:
+            if metric == DistanceFunction.KLG:
 
                 def loss_function(
                     p: Float[Array, " p"],
@@ -339,8 +407,27 @@ def _make_loss_function_spherical(
                         var_mov,
                         n_dim,
                     )
-                    bending_energy = reg_const * calculate_bending_energy(wgts)
-                    return dist + bending_energy, (dist, bending_energy, p)
+                    e_bend = calculate_bending_energy(wgts)
+                    return dist + reg_const * e_bend, (dist, e_bend, p)
+
+            elif metric == DistanceFunction.KLV:
+
+                def loss_function(
+                    p: Float[Array, " p"],
+                ) -> tuple[Float[Array, ""], AuxiliaryData]:
+                    wgts = get_weights(p)
+                    means_trans = transform(p)
+                    dist = kullback_leibler_gmm_approx_var_spherical(
+                        means_ref,
+                        wgts_ref,
+                        means_trans,
+                        wgts_mov,
+                        var_ref,
+                        var_mov,
+                        n_dim,
+                    )
+                    e_bend = calculate_bending_energy(wgts)
+                    return dist + reg_const * e_bend, (dist, e_bend, p)
 
             elif metric == DistanceFunction.L2:
 
@@ -361,13 +448,13 @@ def _make_loss_function_spherical(
                         )
                         * l2_scaling
                     )
-                    bending_energy = reg_const * calculate_bending_energy(wgts)
-                    return dist + bending_energy, (dist, bending_energy, p)
+                    e_bend = calculate_bending_energy(wgts)
+                    return dist + reg_const * e_bend, (dist, e_bend, p)
 
             else:
                 raise ValueError("invalid distance function for loss")
-        elif reg_type == Regularization.RIGDE:
-            if metric == DistanceFunction.KL:
+        elif reg_type == Regularization.RIDGE:
+            if metric == DistanceFunction.KLG:
 
                 def loss_function(
                     p: Float[Array, " p"],
@@ -383,8 +470,35 @@ def _make_loss_function_spherical(
                         var_mov,
                         n_dim,
                     )
-                    ridge_penalty = reg_const * jnp.linalg.norm(wgts)
-                    return dist + ridge_penalty, (dist, ridge_penalty, p)
+                    ridge_penalty = jnp.linalg.norm(wgts)
+                    return dist + reg_const * ridge_penalty, (
+                        dist,
+                        ridge_penalty,
+                        p,
+                    )
+
+            elif metric == DistanceFunction.KLV:
+
+                def loss_function(
+                    p: Float[Array, " p"],
+                ) -> tuple[Float[Array, ""], AuxiliaryData]:
+                    wgts = get_weights(p)
+                    means_trans = transform(p)
+                    dist = kullback_leibler_gmm_approx_var_spherical(
+                        means_ref,
+                        wgts_ref,
+                        means_trans,
+                        wgts_mov,
+                        var_ref,
+                        var_mov,
+                        n_dim,
+                    )
+                    ridge_penalty = jnp.linalg.norm(wgts)
+                    return dist + reg_const * ridge_penalty, (
+                        dist,
+                        ridge_penalty,
+                        p,
+                    )
 
             elif metric == DistanceFunction.L2:
 
@@ -405,8 +519,12 @@ def _make_loss_function_spherical(
                         )
                         * l2_scaling
                     )
-                    ridge_penalty = reg_const * jnp.linalg.norm(wgts)
-                    return dist + ridge_penalty, (dist, ridge_penalty, p)
+                    ridge_penalty = jnp.linalg.norm(wgts)
+                    return dist + reg_const * ridge_penalty, (
+                        dist,
+                        ridge_penalty,
+                        p,
+                    )
 
             else:
                 raise ValueError("invalid distance function for loss")
@@ -434,10 +552,12 @@ def spherical(
     grad_tol: float = 1e-6,
     loss_tol: float = -jnp.inf,
     max_iter: int = 100,
-    save_path: str | None = None,
     l2_scaling: float = 1.0,
+    grbf_bandwidth: float = 1.0,
+    save_path: str | None = None,
+    valid_pts: tuple[Float[Array, "v d"], Float[Array, " v"]] | None = None,
     **lbfgs_kwargs,
-):
+) -> tuple[Float[Array, " p"], tuple[Float[Array, ""], Float[Array, ""], int]]:
     loss_func = _make_loss_function_spherical(
         means_ref,
         wgts_ref,
@@ -449,7 +569,36 @@ def spherical(
         metric,
         regularization,
         l2_scaling,
+        grbf_bandwidth,
     )
+
+    if valid_pts is None:
+
+        def validation_callback(
+            pars: Float[Array, " p"],
+        ) -> tuple[Float[Array, ""], Float[Array, ""]]:
+            return jnp.array(jnp.nan), jnp.array(jnp.nan)
+
+    else:
+        valid_func = _make_loss_function_spherical(
+            valid_pts[0],
+            valid_pts[1],
+            means_mov,
+            wgts_mov,
+            var_ref,
+            var_mov,
+            method,
+            metric,
+            regularization,
+            l2_scaling,
+            grbf_bandwidth,
+        )
+
+        def validation_callback(
+            pars: Float[Array, " p"],
+        ) -> tuple[Float[Array, ""], Float[Array, ""]]:
+            _, auxdata_valid = valid_func(pars)
+            return auxdata_valid[0], auxdata_valid[1]
 
     def loss_func_noaux(pars: Float[Array, " p"]) -> Float[Array, ""]:
         loss_val, _ = loss_func(pars)
@@ -467,13 +616,25 @@ def spherical(
 
     if save_path is not None:
 
-        def save_step_data(aux_data: AuxiliaryData, iter_num: int) -> None:
+        def save_step_data(
+            aux_data: AuxiliaryData,
+            valid_dist: Float[Array, ""],
+            valid_regterm: Float[Array, ""],
+            iter_num: int,
+        ) -> None:
             fpath = path_join(save_path, f"{iter_num:05d}.npz")
-            auxdata_to_npz(aux_data, fpath)
+            auxdata_with_valid_to_npz(
+                aux_data, valid_dist, valid_regterm, fpath
+            )
 
     else:
 
-        def save_step_data(aux_data: AuxiliaryData, iter_num: int) -> None:
+        def save_step_data(
+            aux_data: AuxiliaryData,
+            valid_dist: Float[Array, ""],
+            valid_regterm: Float[Array, ""],
+            iter_num: int,
+        ) -> None:
             pass
 
     def take_step(x: OptimizationState) -> OptimizationState:
@@ -481,7 +642,10 @@ def spherical(
         (loss, aux_data), grads = jax.value_and_grad(loss_func, has_aux=True)(
             params
         )
-        io_callback(save_step_data, None, aux_data, iter_num)
+        valid_dist, valid_reg = validation_callback(params)
+        io_callback(
+            save_step_data, None, aux_data, valid_dist, valid_reg, iter_num
+        )
         grad_norm = jnp.linalg.norm(grads)
         updates, opt_state = optimizer.update(
             grads,

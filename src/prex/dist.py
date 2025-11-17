@@ -410,15 +410,6 @@ def self_energy_gmm_spherical(
             )(means, wgts)
         )
     )
-    # pfun = Partial(mixture_component_overlap_spherical,
-    #                var1=var, var2=var, n_dim=n_dim)
-    # return jnp.sum(
-    #     jax.vmap(
-    #         lambda mu0, w0: jax.vmap(
-    #             lambda mu1, w1: pfun(mu0, w0, mu1, w1), (0, 0), 0
-    #         )(means, wgts), (0, 0), 0
-    #     )(means, wgts)
-    # )
 
 
 @Partial(
@@ -579,10 +570,8 @@ def kullback_leibler_gaussian(
         Float[Array, ""]: scalar KL-divergence
     """
     cov_q_inv = jnp.linalg.inv(cov_q)
-    n_dim = mu_p.shape[0]
     return 0.5 * (
         jnp.log(jnp.linalg.det(cov_q) / jnp.linalg.det(cov_p))
-        - n_dim
         + jnp.trace(cov_q_inv @ cov_p)
         + (mu_q - mu_p).T @ cov_q_inv @ (mu_q - mu_p)
     )
@@ -604,16 +593,13 @@ def kullback_leibler_gaussian_spherical(
             * n_dim
         )
     )
-    diff = mu_q - mu_p
-    return (
-        0.5
-        * (
-            jnp.log(var_q**n_dim / var_p**n_dim)
-            - n_dim
-            + n_dim * (var_p / var_q)
-            + diff[jnp.newaxis, :] @ cov_inv_q @ diff[:, jnp.newaxis]
-        )[0]
+    diff = (mu_q - mu_p)[jnp.newaxis, :]
+    val = 0.5 * (
+        jnp.log(var_q**n_dim / var_p**n_dim)
+        + n_dim * (var_p / var_q)
+        + diff @ cov_inv_q @ diff.T
     )
+    return val[0, 0]
 
 
 def kullback_leibler_gmm_approx(
@@ -692,3 +678,72 @@ def kullback_leibler_gmm_approx_spherical(
     )(mu_p, wgt_p)
     min_kl = jnp.amin(pairwise_kl, axis=1)
     return jnp.sum(jnp.multiply(wgt_p, min_kl))
+
+
+def kullback_leibler_gmm_approx_var_spherical(
+    mu_p: Float[Array, "n d"],
+    wgt_p: Float[Array, " n"],
+    mu_q: Float[Array, "m d"],
+    wgt_q: Float[Array, " m"],
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+) -> Float[Array, ""]:
+    kl_fun = Partial(
+        kullback_leibler_gaussian_spherical,
+        var_p=var_p,
+        var_q=var_q,
+        n_dim=n_dim,
+    )
+
+    def kl_combos(
+        mu_a: Float[Array, "n d"],
+        mu_b: Float[Array, "m d"],
+        wgt_b: Float[Array, " m"],
+    ):
+        return jax.vmap(
+            lambda a: jax.vmap(
+                lambda b: jnp.exp(jnp.negative(kl_fun(a, b))), 0, 0
+            )(mu_b)
+            * wgt_b,
+            0,
+            0,
+        )(mu_a)
+
+    self_e = kl_combos(mu_p, mu_p, wgt_p)
+    top = jnp.sum(self_e, axis=1)
+    bot = jnp.sum(kl_combos(mu_p, mu_q, wgt_q), axis=1)
+    return jnp.sum(jnp.multiply(wgt_p, jnp.divide(top, bot)))
+
+
+def gaussian_entropy(cov: Float[Array, "d d"]) -> Float[Array, ""]:
+    d = cov.shape[-1]
+    return jnp.add(
+        (d / 2.0) * jnp.log(2 * jnp.pi * jnp.exp(1.0)),
+        0.5 * jnp.log(jnp.linalg.det(cov)),
+    )
+
+
+def gaussian_entropy_spherical(
+    var: float | Float[Array, ""], n_dim: int
+) -> Float[Array, ""]:
+    det = var**n_dim
+    return jnp.add(
+        (n_dim / 2.0) * jnp.log(2 * jnp.pi * jnp.exp(1.0)), 0.5 * jnp.log(det)
+    )
+
+
+def mixture_entropy(
+    cov: Float[Array, "n d d"],
+    wgt: Float[Array, " n"],
+) -> Float[Array, ""]:
+    return jnp.sum(jnp.multiply(wgt, jax.vmap(gaussian_entropy, 0, 0)(cov)))
+
+
+def mixture_entropy_spherical(
+    var: Float[Array, ""] | float,
+    wgt: Float[Array, " n"],
+    n_dim: int,
+) -> Float[Array, ""]:
+    per_comp_ent = gaussian_entropy_spherical(var, n_dim)
+    return jnp.sum(jnp.multiply(wgt, per_comp_ent))
