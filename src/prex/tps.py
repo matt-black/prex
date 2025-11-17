@@ -109,6 +109,19 @@ def _rbf_grad3(diff: Array, dist: Array) -> Array:
     return jax.lax.select(dist == 0, jnp.zeros_like(dist), diff / dist)
 
 
+def make_basis_kernel(
+    ctrl_pts: Float[Array, "n_ctrl d"],
+) -> tuple[Float[Array, "n_ctrl n_ctrl"], Float[Array, "n_ctrl n_ctrl"]]:
+    n, d = ctrl_pts.shape
+    K = tps_rbf(ctrl_pts, ctrl_pts)
+    Pn = jnp.c_[jnp.ones((n, 1)), ctrl_pts]
+    U, _, _ = jnp.linalg.svd(Pn)
+    PP = U[:, d + 1 :]
+    basis = jnp.c_[Pn, jnp.dot(K, PP)]
+    kernel = PP.T @ K @ PP
+    return basis, kernel
+
+
 def transform_gmm(
     means: Float[Array, "n_comp d"],
     covariances: Float[Array, "n_comp d d"],
@@ -156,6 +169,18 @@ def transform_means(
     psi = tps_rbf(means, ctrl_pts)
     local_deformation = psi @ rbf_wgts
     return global_means + local_deformation
+
+
+def transform_basis(
+    basis: Float[Array, "n_comp d"],
+    affine: Float[Array, "d d"],
+    translation: Float[Array, " d"],
+    rbf_wgts: Float[Array, "n_ctrl-d d"],
+) -> Float[Array, "n_comp d"]:
+    par = jnp.concatenate(
+        [translation[jnp.newaxis, :], affine, rbf_wgts], axis=0
+    )
+    return basis @ par
 
 
 @Partial(
@@ -220,7 +245,7 @@ def initialize_params(
         init_aff = jnp.eye(n_dim)
     if init_trans is None:
         init_trans = jnp.zeros((n_dim,))
-    init_wgt = jnp.zeros((n_ctrl_pts, n_dim))
+    init_wgt = jnp.zeros((n_ctrl_pts - n_dim - 1, n_dim))
     return jnp.concatenate(
         [init_aff.ravel(), init_trans.ravel(), init_wgt.ravel()], axis=0
     )

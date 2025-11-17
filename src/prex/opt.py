@@ -239,13 +239,15 @@ def _make_transform_function_spherical(
         else:
             raise ValueError("invalid # of dimensions")
     elif method == AlignmentMethod.TPS:
+        B, _ = tps.make_basis_kernel(means_mov)
+
         if n_dim == 2:
 
             def transform_function(
                 p: Float[Array, " p"],
             ) -> Float[Array, "m d"]:
                 A, t, wgt = tps.unpack_params_2d(p)
-                return tps.transform_means(means_mov, A, t, ctrl_pts, wgt)
+                return tps.transform_basis(B, A, t, wgt)
 
         elif n_dim == 3:
 
@@ -253,7 +255,7 @@ def _make_transform_function_spherical(
                 p: Float[Array, " p"],
             ) -> Float[Array, "m d"]:
                 A, t, wgt = tps.unpack_params_3d(p)
-                return tps.transform_means(means_mov, A, t, ctrl_pts, wgt)
+                return tps.transform_basis(B, A, t, wgt)
 
         else:
             raise ValueError("invalid # of dimensions")
@@ -277,7 +279,7 @@ def _make_loss_function_spherical(
 ) -> Callable[[Float[Array, " p"]], tuple[Float[Array, ""], AuxiliaryData]]:
     _, n_dim = means_ref.shape
     transform = _make_transform_function_spherical(
-        means_mov, method, means_ref, grbf_bandwidth
+        means_mov, method, means_mov, grbf_bandwidth
     )
     reg_type, reg_const = regularization
     if reg_type == Regularization.NONE:
@@ -388,9 +390,8 @@ def _make_loss_function_spherical(
             raise ValueError("invalid alignment method for regularization")
         # make loss function, using the function to grab weights
         if reg_type == Regularization.TPS:
-            calculate_bending_energy = Partial(
-                tps.tps_bending_energy, tps.tps_rbf(means_ref, means_ref)
-            )
+            _, K = tps.make_basis_kernel(means_mov)
+            calculate_bending_energy = Partial(tps.tps_bending_energy, K)
             if metric == DistanceFunction.KLG:
 
                 def loss_function(
