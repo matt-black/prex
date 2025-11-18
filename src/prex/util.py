@@ -99,3 +99,18 @@ def rotation_matrix_3d(
         ]
     )
     return Rz @ Ry @ Rx
+
+
+def zscore_coordinates(
+    coords: Float[Array, "n d"],
+) -> tuple[Float[Array, "n d"], tuple[Float[Array, " d"], Float[Array, ""]]]:
+    ax = jnp.argmax(jnp.ptp(coords, axis=0))
+    mu = jnp.mean(coords, axis=0)
+    sd = jnp.std(coords[:, ax])
+    return (coords - mu[jnp.newaxis, :]) / sd, (mu, sd)
+
+
+def inv_zscore_coordinates(
+    coordz: Float[Array, "n d"], mu: Float[Array, " d"], sd: Float[Array, ""]
+) -> Float[Array, "n d"]:
+    return (coordz * sd) + mu[jnp.newaxis, :]

@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from enum import Enum
+from math import floor
 from os.path import join as path_join
 
 import jax
@@ -106,6 +107,26 @@ def load_history(
         )
         vecs.append(vec)
     return numpy.stack(vecs, axis=0)
+
+
+def make_train_valid_split(
+    pts: Float[Array, "n d"],
+    wgts: Float[Array, " n"],
+    pct_valid: float,
+    prng_seed: int,
+) -> tuple[
+    tuple[Float[Array, "t d"], Float[Array, " t"]],
+    tuple[Float[Array, "v d"], Float[Array, " v"]],
+]:
+    n_pts, _ = pts.shape
+    n_valid = floor(n_pts * pct_valid)
+    if n_valid == 0:
+        raise ValueError("didnt get any points in validation set")
+    key = jax.random.key(prng_seed)
+    idx = jax.random.permutation(key, jnp.arange(0, n_pts))
+    val_idx = idx[:n_valid]
+    trn_idx = idx[n_valid:]
+    return (pts[trn_idx, :], wgts[trn_idx]), (pts[val_idx, :], wgts[val_idx])
 
 
 def _make_transform_function_spherical(

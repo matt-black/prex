@@ -178,28 +178,23 @@ def transform_basis(
     rbf_wgts: Float[Array, "n_ctrl-d d"],
 ) -> Float[Array, "n_comp d"]:
     par = jnp.concatenate(
-        [translation[jnp.newaxis, :], affine, rbf_wgts], axis=0
+        [affine, translation[jnp.newaxis, :], rbf_wgts], axis=0
     )
     return basis @ par
 
 
 @Partial(
     jax.jit,
-    static_argnums=(
-        1,
-        2,
-    ),
+    static_argnums=(1,),
 )
-def unpack_params(
-    flat_params: Float[Array, " p"], n_ctrl: int, n_dim: int
-) -> tuple[
+def unpack_params(flat_params: Float[Array, " p"], n_dim: int) -> tuple[
     Float[Array, "{n_dim} {n_dim}"],
     Float[Array, " {n_dim}"],
     Float[Array, "{n_ctrl} {n_dim}"],
 ]:
     affine = flat_params[: n_dim**2].reshape(n_dim, n_dim)
     translation = flat_params[n_dim**2 : n_dim**2 + n_dim]
-    rbf_wgts = flat_params[n_dim**2 + n_dim :].reshape(n_ctrl, n_dim)
+    rbf_wgts = flat_params[n_dim**2 + n_dim :].reshape(-1, n_dim)
     return affine, translation, rbf_wgts
 
 
@@ -222,7 +217,7 @@ def unpack_params_2d(
 
 def unpack_params_3d(
     par: Float[Array, " p"],
-) -> tuple[Float[Array, "2 2"], Float[Array, " 2"], Float[Array, "n_ctrl 2"]]:
+) -> tuple[Float[Array, "3 3"], Float[Array, " 3"], Float[Array, "n_ctrl 3"]]:
     aff = par[:9].reshape(3, 3)
     trans = par[9:12]
     psi = par[12:].reshape(-1, 3)
