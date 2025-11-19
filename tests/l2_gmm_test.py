@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 
-from prex.dist import l2_distance_gmm, l2_distance_gmm_opt
+from prex.gmm.dist import l2_distance_gmm, l2_distance_gmm_opt
 
 jax.config.update("jax_platform_name", "cpu")
 

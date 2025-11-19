@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from prex.affine import transform_gmm
+from prex.gmm.affine import transform_gmm
 
 # from prex.dist import self_energy_gmm
 

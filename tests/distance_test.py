@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
-from prex import dist
+from prex.gmm import dist
 
 jax.config.update("jax_platform_name", "cpu")
 

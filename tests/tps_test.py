@@ -3,8 +3,8 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from prex import tps
-from prex.affine import transform_gmm as transform_gmm_affine
+from prex.gmm import tps
+from prex.gmm.affine import transform_gmm as transform_gmm_affine
 
 
 @jax.jit

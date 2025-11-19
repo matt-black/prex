@@ -5,10 +5,10 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 # from prex import opt
 # from prex.dist import self_energy_gmm, self_energy_gmm_spherical
-from prex.rigid import (  # pack_params_2d,; transform_gmm_rotangles,; transform_means_rotangles2,; unpack_params_2d,
+from prex.gmm.rigid import (  # pack_params_2d,; transform_gmm_rotangles,; transform_means_rotangles2,; unpack_params_2d,
     transform_gmm,
 )
-from prex.util import rotation_matrix_3d
+from prex.gmm.util import rotation_matrix_3d
 
 jax.config.update("jax_platform_name", "cpu")
 
