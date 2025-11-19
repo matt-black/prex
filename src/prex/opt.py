@@ -11,22 +11,19 @@ from jax.experimental import io_callback
 from jax.tree_util import Partial
 from jaxtyping import Array, Bool, Float
 
-from . import affine, rigid, tps
+from . import affine, grb, rigid, tps
 from .dist import (
     kullback_leibler_gmm_approx_spherical,
     kullback_leibler_gmm_approx_var_spherical,
     l2_distance_gmm_opt_spherical,
 )
-from .grbf import affine as grbfa
-from .grbf import rigid as grbfr
 
 
 class AlignmentMethod(Enum):
     AFFINEM = "affine-matrix"
     AFFINE = "affine"
     RIGID = "rigid"
-    GRBFR = "grbf-rigid"
-    GRBFA = "grbf-affine"
+    GRB = "grb"
     TPS = "tps"
 
 
@@ -199,68 +196,31 @@ def _make_transform_function_spherical(
 
         else:
             raise ValueError("invalid # of dimensions")
-    elif method == AlignmentMethod.GRBFR:
+
+    elif method == AlignmentMethod.GRB:
+        B, _ = grb.make_basis_kernel(means_mov, ctrl_pts, grbf_bandwidth)
+
         if n_dim == 2:
 
             def transform_function(
                 p: Float[Array, " p"],
             ) -> Float[Array, "m d"]:
-                s, alpha, t, psi = grbfr.unpack_params_2d(p)
-                return grbfr.transform_means_2d(
-                    means_mov,
-                    s,
-                    alpha,
-                    t,
-                    psi,
-                    ctrl_pts,
-                    grbf_bandwidth,
-                )
+                A, t, wgt = grb.unpack_params_2d(p)
+                return grb.transform_basis(B, A, t, wgt)
 
         elif n_dim == 3:
 
             def transform_function(
                 p: Float[Array, " p"],
             ) -> Float[Array, "m d"]:
-                s, alpha, beta, gamma, t, psi = grbfr.unpack_params_3d(p)
-                return grbfr.transform_means_3d(
-                    means_mov,
-                    s,
-                    alpha,
-                    beta,
-                    gamma,
-                    t,
-                    psi,
-                    ctrl_pts,
-                    grbf_bandwidth,
-                )
+                A, t, wgt = grb.unpack_params_3d(p)
+                return grb.transform_basis(B, A, t, wgt)
 
         else:
             raise ValueError("invalid # of dimensions")
-    elif method == AlignmentMethod.GRBFA:
-        if n_dim == 2:
 
-            def transform_function(
-                p: Float[Array, " p"],
-            ) -> Float[Array, "m d"]:
-                aff, t, psi = grbfa.unpack_params_2d(p)
-                return grbfa.transform_means(
-                    means_mov, aff, t, psi, ctrl_pts, grbf_bandwidth
-                )
-
-        elif n_dim == 3:
-
-            def transform_function(
-                p: Float[Array, " p"],
-            ) -> Float[Array, "m d"]:
-                aff, t, psi = grbfa.unpack_params_3d(p)
-                return grbfa.transform_means(
-                    means_mov, aff, t, psi, ctrl_pts, grbf_bandwidth
-                )
-
-        else:
-            raise ValueError("invalid # of dimensions")
     elif method == AlignmentMethod.TPS:
-        B, _ = tps.make_basis_kernel(means_mov)
+        B, _ = tps.make_basis_kernel(means_mov, ctrl_pts)
 
         if n_dim == 2:
 
@@ -295,12 +255,16 @@ def _make_loss_function_spherical(
     method: AlignmentMethod,
     metric: DistanceFunction,
     regularization: RegularizationData,
+    ctrl_pts: Float[Array, "c d"] | None = None,
     l2_scaling: float = 1.0,
     grbf_bandwidth: float = 1.0,
 ) -> Callable[[Float[Array, " p"]], tuple[Float[Array, ""], AuxiliaryData]]:
     _, n_dim = means_ref.shape
     transform = _make_transform_function_spherical(
-        means_mov, method, means_mov, grbf_bandwidth
+        means_mov,
+        method,
+        (ctrl_pts if ctrl_pts is not None else means_mov),
+        grbf_bandwidth,
     )
     reg_type, reg_const = regularization
     if reg_type == Regularization.NONE:
@@ -362,36 +326,22 @@ def _make_loss_function_spherical(
             raise ValueError("invalid distance function for loss")
     else:
         # figure out how to get weights (which we'll need for regularization)
-        if method == AlignmentMethod.GRBFA:
+        if method == AlignmentMethod.GRB:
             if n_dim == 2:
 
                 def get_weights(pars: Float[Array, " p"]) -> Float[Array, " w"]:
-                    _, _, wgt = grbfa.unpack_params_2d(pars)
+                    _, _, wgt = grb.unpack_params_2d(pars)
                     return wgt
 
             elif n_dim == 3:
 
                 def get_weights(pars: Float[Array, " p"]) -> Float[Array, " w"]:
-                    _, _, wgt = grbfa.unpack_params_3d(pars)
+                    _, _, wgt = grb.unpack_params_3d(pars)
                     return wgt
 
             else:
                 raise ValueError("invalid # of dimensions")
-        elif method == AlignmentMethod.GRBFR:
-            if n_dim == 2:
 
-                def get_weights(pars: Float[Array, " p"]) -> Float[Array, " w"]:
-                    _, _, _, wgt = grbfr.unpack_params_2d(pars)
-                    return wgt
-
-            elif n_dim == 3:
-
-                def get_weights(pars: Float[Array, " p"]) -> Float[Array, " w"]:
-                    _, _, _, _, _, wgt = grbfr.unpack_params_3d(pars)
-                    return wgt
-
-            else:
-                raise ValueError("invalid # of dimensions")
         elif method == AlignmentMethod.TPS:
             if n_dim == 2:
 
@@ -411,7 +361,21 @@ def _make_loss_function_spherical(
             raise ValueError("invalid alignment method for regularization")
         # make loss function, using the function to grab weights
         if reg_type == Regularization.TPS:
-            _, K = tps.make_basis_kernel(means_mov)
+
+            if method == AlignmentMethod.TPS:
+                _, K = tps.make_basis_kernel(
+                    means_mov, ctrl_pts if ctrl_pts is not None else means_mov
+                )
+            elif method == AlignmentMethod.GRB:
+                _, K = grb.make_basis_kernel(
+                    means_mov,
+                    ctrl_pts if ctrl_pts is not None else means_mov,
+                    grbf_bandwidth,
+                )
+            else:
+                raise ValueError(
+                    "invalid alignment method for TPS regularization"
+                )
             calculate_bending_energy = Partial(tps.tps_bending_energy, K)
             if metric == DistanceFunction.KLG:
 
@@ -576,6 +540,7 @@ def spherical(
     max_iter: int = 100,
     l2_scaling: float = 1.0,
     grbf_bandwidth: float = 1.0,
+    ctrl_pts: Float[Array, "c d"] | None = None,
     save_path: str | None = None,
     valid_pts: tuple[Float[Array, "v d"], Float[Array, " v"]] | None = None,
     **lbfgs_kwargs,
@@ -590,6 +555,7 @@ def spherical(
         method,
         metric,
         regularization,
+        ctrl_pts,
         l2_scaling,
         grbf_bandwidth,
     )
@@ -612,6 +578,7 @@ def spherical(
             method,
             metric,
             regularization,
+            ctrl_pts,
             l2_scaling,
             grbf_bandwidth,
         )

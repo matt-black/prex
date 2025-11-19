@@ -110,16 +110,36 @@ def _rbf_grad3(diff: Array, dist: Array) -> Array:
 
 
 def make_basis_kernel(
+    x: Float[Array, "n d"],
     ctrl_pts: Float[Array, "n_ctrl d"],
 ) -> tuple[Float[Array, "n_ctrl n_ctrl"], Float[Array, "n_ctrl n_ctrl"]]:
-    n, d = ctrl_pts.shape
+    n_x, _ = x.shape
+    n_ctrl, d = ctrl_pts.shape
     K = tps_rbf(ctrl_pts, ctrl_pts)
+    U = tps_rbf(x, ctrl_pts)
+    Px = jnp.c_[jnp.ones((n_x, 1)), x]
+    Pc = jnp.c_[jnp.ones((n_ctrl, 1)), ctrl_pts]
+    Uc, _, _ = jnp.linalg.svd(Pc)
+    PP = Uc[:, d + 1 :]
+    basis = jnp.c_[Px, jnp.dot(U, PP)]
+    kernel = PP.T @ K @ PP
+    return basis, kernel
+
+
+def interpolate(
+    pts: Float[Array, "m d"],
+    ctrl_pts: Float[Array, "n d"],
+    wgts: Float[Array, "n d"],
+) -> Float[Array, "m d"]:
+    m, d = pts.shape
+    n, _ = ctrl_pts.shape
+    k_new = tps_rbf(pts, ctrl_pts)
+    P_new = jnp.c_[jnp.ones((m, 1)), pts]
     Pn = jnp.c_[jnp.ones((n, 1)), ctrl_pts]
     U, _, _ = jnp.linalg.svd(Pn)
     PP = U[:, d + 1 :]
-    basis = jnp.c_[Pn, jnp.dot(K, PP)]
-    kernel = PP.T @ K @ PP
-    return basis, kernel
+    basis_new = jnp.c_[P_new, jnp.dot(k_new, PP)]
+    return basis_new @ wgts
 
 
 def transform_gmm(
