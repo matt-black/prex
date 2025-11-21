@@ -39,6 +39,12 @@ class Regularization(Enum):
     RIDGE = 2
 
 
+class Optimizer(Enum):
+    LBFGS = 0
+    ADAM = 1
+    SGD = 2
+
+
 type AuxiliaryData = tuple[
     Float[Array, ""], Float[Array, ""], Float[Array, " p"]
 ]
@@ -236,6 +242,8 @@ def _make_transform_function_spherical(
                 p: Float[Array, " p"],
             ) -> Float[Array, "m d"]:
                 A, t, wgt = tps.unpack_params_3d(p)
+                A = jax.lax.stop_gradient(A)
+                t = jax.lax.stop_gradient(t)
                 return tps.transform_basis(B, A, t, wgt)
 
         else:
@@ -298,8 +306,8 @@ def _make_loss_function_spherical(
                     wgts_mov,
                     var_ref,
                     var_mov,
-                    n_dim,
                 )
+                jax.debug.print("{}", dist)
                 return dist, (dist, jnp.array(0.0), p)
 
         elif metric == DistanceFunction.L2:
@@ -410,7 +418,6 @@ def _make_loss_function_spherical(
                         wgts_mov,
                         var_ref,
                         var_mov,
-                        n_dim,
                     )
                     e_bend = calculate_bending_energy(wgts)
                     return dist + reg_const * e_bend, (dist, e_bend, p)
@@ -477,7 +484,6 @@ def _make_loss_function_spherical(
                         wgts_mov,
                         var_ref,
                         var_mov,
-                        n_dim,
                     )
                     ridge_penalty = jnp.linalg.norm(wgts)
                     return dist + reg_const * ridge_penalty, (
@@ -543,7 +549,8 @@ def spherical(
     ctrl_pts: Float[Array, "c d"] | None = None,
     save_path: str | None = None,
     valid_pts: tuple[Float[Array, "v d"], Float[Array, " v"]] | None = None,
-    **lbfgs_kwargs,
+    optax_opt: Optimizer = Optimizer.LBFGS,
+    **optim_kwargs,
 ) -> tuple[Float[Array, " p"], tuple[Float[Array, ""], Float[Array, ""], int]]:
     loss_func = _make_loss_function_spherical(
         means_ref,
@@ -593,7 +600,14 @@ def spherical(
         loss_val, _ = loss_func(pars)
         return loss_val
 
-    optimizer = optax.lbfgs(**lbfgs_kwargs)
+    if optax_opt == Optimizer.LBFGS:
+        optimizer = optax.lbfgs(**optim_kwargs)
+    elif optax_opt == Optimizer.ADAM:
+        optimizer = optax.adam(**optim_kwargs)
+    elif optax_opt == Optimizer.SGD:
+        optimizer = optax.sgd(**optim_kwargs)
+    else:
+        raise ValueError("invalid optimizer")
     opt_state = optimizer.init(init_pars)
 
     def keep_stepping(x: OptimizationState) -> Bool:

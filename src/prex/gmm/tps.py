@@ -198,7 +198,7 @@ def transform_basis(
     rbf_wgts: Float[Array, "n_ctrl-d d"],
 ) -> Float[Array, "n_comp d"]:
     par = jnp.concatenate(
-        [affine, translation[jnp.newaxis, :], rbf_wgts], axis=0
+        [translation[jnp.newaxis, :], affine, rbf_wgts], axis=0
     )
     return basis @ par
 
@@ -255,12 +255,13 @@ def initialize_params(
     n_dim: int,
     init_aff: Float[Array, "{n_dim} {n_dim}"] | None,
     init_trans: Float[Array, " {n_dim}"] | None,
+    epsilon: float = 1e-6,
 ) -> Float[Array, " p"]:
     if init_aff is None:
         init_aff = jnp.eye(n_dim)
     if init_trans is None:
         init_trans = jnp.zeros((n_dim,))
-    init_wgt = jnp.zeros((n_ctrl_pts - n_dim - 1, n_dim))
+    init_wgt = jnp.ones((n_ctrl_pts - n_dim - 1, n_dim)) * epsilon
     return jnp.concatenate(
         [init_aff.ravel(), init_trans.ravel(), init_wgt.ravel()], axis=0
     )

@@ -687,33 +687,42 @@ def kullback_leibler_gmm_approx_var_spherical(
     wgt_q: Float[Array, " m"],
     var_p: float,
     var_q: float,
-    n_dim: int,
 ) -> Float[Array, ""]:
-    kl_fun = Partial(
-        kullback_leibler_gaussian_spherical,
-        var_p=var_p,
-        var_q=var_q,
-        n_dim=n_dim,
-    )
 
-    def kl_combos(
-        mu_a: Float[Array, "n d"],
-        mu_b: Float[Array, "m d"],
-        wgt_b: Float[Array, " m"],
-    ):
-        return jax.vmap(
-            lambda a: jax.vmap(
-                lambda b: jnp.exp(jnp.negative(kl_fun(a, b))), 0, 0
-            )(mu_b)
-            * wgt_b,
+    self_e = jax.vmap(
+        lambda a: jax.vmap(
+            lambda b, w: w
+            * jnp.exp(
+                jnp.negative(
+                    kullback_leibler_gaussian_spherical(a, b, var_p, var_p, 3)
+                )
+            ),
+            (0, 0),
             0,
-            0,
-        )(mu_a)
+        )(mu_p, wgt_p),
+        0,
+        0,
+    )(mu_p)
 
-    self_e = kl_combos(mu_p, mu_p, wgt_p)
+    cross_e = jax.vmap(
+        lambda a: jax.vmap(
+            lambda b, w: w
+            * jnp.exp(
+                jnp.negative(
+                    kullback_leibler_gaussian_spherical(a, b, var_p, var_q, 3)
+                )
+            ),
+            (0, 0),
+            0,
+        )(mu_q, wgt_q),
+        0,
+        0,
+    )(mu_p)
+
     top = jnp.sum(self_e, axis=1)
-    bot = jnp.sum(kl_combos(mu_p, mu_q, wgt_q), axis=1)
-    return jnp.sum(jnp.multiply(wgt_p, jnp.divide(top, bot)))
+    bot = jnp.sum(cross_e, axis=1)
+    val = jnp.sum(jnp.multiply(wgt_p, jnp.divide(top, bot)))
+    return val
 
 
 def gaussian_entropy(cov: Float[Array, "d d"]) -> Float[Array, ""]:
