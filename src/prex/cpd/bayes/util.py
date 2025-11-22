@@ -2,10 +2,10 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
+from ...util import sqdist
 from .._matching import MatchingMatrix
 from ..nonrigid import KernelMatrix
 from ..rigid import RotationMatrix, ScalingTerm, Translation
-from ..util import sqdist
 from .kernel import KernelFunction
 
 __all__ = [

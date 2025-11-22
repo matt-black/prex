@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jax.tree_util import Partial
 from jaxtyping import Array, Float
 
-from .util import rotation_matrix_2d, rotation_matrix_3d
+from ..util import rotation_matrix_2d, rotation_matrix_3d
 
 
 def jacobian(

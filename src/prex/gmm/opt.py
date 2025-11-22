@@ -45,10 +45,21 @@ class Optimizer(Enum):
     SGD = 2
 
 
+class ValidationFunction(Enum):
+    HOPT = 1
+    CORR = 2
+
+
+# parts of AuxiliaryData: (distance, regularization, parameters)
 type AuxiliaryData = tuple[
     Float[Array, ""], Float[Array, ""], Float[Array, " p"]
 ]
+# (RegularizationEnum, scalar multiplier)
 type RegularizationData = tuple[Regularization, float]
+# Callable that takes in parameter vector, returns the loss value (to be minimized) and auxiliary data
+type LossFunctionWithAux = Callable[
+    [Float[Array, " p"]], tuple[Float[Array, ""], AuxiliaryData]
+]
 
 
 def auxdata_to_npz(aux_data: AuxiliaryData, file_path: str) -> None:
@@ -266,7 +277,7 @@ def _make_loss_function_spherical(
     ctrl_pts: Float[Array, "c d"] | None = None,
     l2_scaling: float = 1.0,
     grbf_bandwidth: float = 1.0,
-) -> Callable[[Float[Array, " p"]], tuple[Float[Array, ""], AuxiliaryData]]:
+) -> LossFunctionWithAux:
     _, n_dim = means_ref.shape
     transform = _make_transform_function_spherical(
         means_mov,
@@ -669,3 +680,52 @@ def spherical(
         (init_pars, opt_state, jnp.array(jnp.inf), jnp.array(jnp.inf), 0),
     )
     return par_f, (grad_norm, loss_final, num_iter)
+
+
+def make_validation_function_hopt(
+    means_valid: Float[Array, "v d"],
+    wgts_valid: Float[Array, " v"],
+    means_mov: Float[Array, "m d"],
+    wgts_mov: Float[Array, " m"],
+    method: AlignmentMethod,
+    metric: DistanceFunction,
+    regularization: RegularizationData,
+    var_valid: float,
+    var_mov: float,
+    ctrl_pts: Float[Array, "c d"] | None,
+    l2_scaling: float,
+    grbf_bandwidth: float,
+) -> LossFunctionWithAux:
+    return _make_loss_function_spherical(
+        means_valid,
+        wgts_valid,
+        means_mov,
+        wgts_mov,
+        var_valid,
+        var_mov,
+        method,
+        metric,
+        regularization,
+        ctrl_pts,
+        l2_scaling,
+        grbf_bandwidth,
+    )
+
+
+def make_validation_function_corr(
+    means_ref: Float[Array, "v d"],
+    wgts_ref: Float[Array, " v"],
+    means_mov: Float[Array, "m d"],
+    wgts_mov: Float[Array, " m"],
+    method: AlignmentMethod,
+    metric: DistanceFunction,
+    regularization: RegularizationData,
+    var_valid: float,
+    var_mov: float,
+    ctrl_pts: Float[Array, "c d"] | None,
+    ref_p2u_vec: Float[Array, " d"],
+    mov_p2u_vec: Float[Array, " d"],
+    ref_vol: Float[Array, "z y x"] | Float[Array, "y x"],
+    mov_vol: Float[Array, "z y x"] | Float[Array, "y x"],
+):
+    raise NotImplementedError()

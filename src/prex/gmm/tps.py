@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jax.tree_util import Partial
 from jaxtyping import Array, Float
 
-from .util import sqdist
+from ..util import sqdist
 
 
 def tps_rbf(

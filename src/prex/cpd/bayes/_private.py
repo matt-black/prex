@@ -6,10 +6,10 @@ from jax.scipy.special import digamma
 from jax.tree_util import Partial
 from jaxtyping import Array, Float
 
+from ...util import sqdist
 from .._matching import MatchingMatrix
 from ..nonrigid import KernelMatrix
 from ..rigid import RotationMatrix, ScalingTerm, Translation
-from ..util import sqdist
 from .util import dimension_bounds
 from .util import transform as apply_T
 from .util import transform_inverse as apply_Tinv

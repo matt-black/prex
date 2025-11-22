@@ -2,8 +2,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float
 
+from ..util import sqdist
 from ._matching import MatchingMatrix, expectation
-from .util import sqdist
 
 __all__ = [
     "RotationMatrix",
