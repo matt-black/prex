@@ -11,6 +11,7 @@ from jax.experimental import io_callback
 from jax.tree_util import Partial
 from jaxtyping import Array, Bool, Float
 
+from ..util import normalized_cross_correlation, rotation_matrix_3d
 from . import affine, grb, rigid, tps
 from .dist import (
     kullback_leibler_gmm_approx_spherical,
@@ -59,6 +60,9 @@ type RegularizationData = tuple[Regularization, float]
 # Callable that takes in parameter vector, returns the loss value (to be minimized) and auxiliary data
 type LossFunctionWithAux = Callable[
     [Float[Array, " p"]], tuple[Float[Array, ""], AuxiliaryData]
+]
+type ValidationCallback = Callable[
+    [Float[Array, " p"]], tuple[Float[Array, ""], Float[Array, ""]]
 ]
 
 
@@ -559,7 +563,7 @@ def spherical(
     grbf_bandwidth: float = 1.0,
     ctrl_pts: Float[Array, "c d"] | None = None,
     save_path: str | None = None,
-    valid_pts: tuple[Float[Array, "v d"], Float[Array, " v"]] | None = None,
+    validation_callback: ValidationCallback | None = None,
     optax_opt: Optimizer = Optimizer.LBFGS,
     **optim_kwargs,
 ) -> tuple[Float[Array, " p"], tuple[Float[Array, ""], Float[Array, ""], int]]:
@@ -578,34 +582,12 @@ def spherical(
         grbf_bandwidth,
     )
 
-    if valid_pts is None:
+    if validation_callback is None:
 
         def validation_callback(
             pars: Float[Array, " p"],
         ) -> tuple[Float[Array, ""], Float[Array, ""]]:
             return jnp.array(jnp.nan), jnp.array(jnp.nan)
-
-    else:
-        valid_func = _make_loss_function_spherical(
-            valid_pts[0],
-            valid_pts[1],
-            means_mov,
-            wgts_mov,
-            var_ref,
-            var_mov,
-            method,
-            metric,
-            regularization,
-            ctrl_pts,
-            l2_scaling,
-            grbf_bandwidth,
-        )
-
-        def validation_callback(
-            pars: Float[Array, " p"],
-        ) -> tuple[Float[Array, ""], Float[Array, ""]]:
-            _, auxdata_valid = valid_func(pars)
-            return auxdata_valid[0], auxdata_valid[1]
 
     def loss_func_noaux(pars: Float[Array, " p"]) -> Float[Array, ""]:
         loss_val, _ = loss_func(pars)
@@ -690,18 +672,18 @@ def make_validation_function_hopt(
     method: AlignmentMethod,
     metric: DistanceFunction,
     regularization: RegularizationData,
-    var_valid: float,
+    var_ref: float,
     var_mov: float,
     ctrl_pts: Float[Array, "c d"] | None,
     l2_scaling: float,
     grbf_bandwidth: float,
-) -> LossFunctionWithAux:
-    return _make_loss_function_spherical(
+) -> ValidationCallback:
+    loss_func = _make_loss_function_spherical(
         means_valid,
         wgts_valid,
         means_mov,
         wgts_mov,
-        var_valid,
+        var_ref,
         var_mov,
         method,
         metric,
@@ -711,21 +693,189 @@ def make_validation_function_hopt(
         grbf_bandwidth,
     )
 
+    def validation_callback(
+        pars: Float[Array, " p"],
+    ) -> tuple[Float[Array, ""], Float[Array, ""]]:
+        _, auxdata_valid = loss_func(pars)
+        return auxdata_valid[0], auxdata_valid[1]
 
-def make_validation_function_corr(
+    return validation_callback
+
+
+def make_validation_function_corr_tps(
     means_ref: Float[Array, "v d"],
     wgts_ref: Float[Array, " v"],
     means_mov: Float[Array, "m d"],
     wgts_mov: Float[Array, " m"],
-    method: AlignmentMethod,
-    metric: DistanceFunction,
-    regularization: RegularizationData,
-    var_valid: float,
-    var_mov: float,
     ctrl_pts: Float[Array, "c d"] | None,
-    ref_p2u_vec: Float[Array, " d"],
-    mov_p2u_vec: Float[Array, " d"],
+    ref_pix2unit: Callable[[Float[Array, " d"]], Float[Array, " d"]],
+    mov_unit2pix: Callable[[Float[Array, " d"]], Float[Array, " d"]],
     ref_vol: Float[Array, "z y x"] | Float[Array, "y x"],
+    ref_grid_pts: Float[Array, "z y x d"] | Float[Array, "y x d"],
     mov_vol: Float[Array, "z y x"] | Float[Array, "y x"],
-):
-    raise NotImplementedError()
+    blur_fun: Callable[[Array], Array] | None = None,
+) -> tuple[
+    ValidationCallback, Callable[[Float[Array, " p"]], Float[Array, " z y x"]]
+]:
+    """Create a validation function that warps volumes and computes correlation.
+
+    This function creates a validation function that:
+    1. Takes TPS parameters
+    2. Transforms moving GMM means with forward TPS
+    3. Creates inverse transform using negated displacement vectors
+    4. Warps moving volume onto reference using inverse transform
+    5. Computes normalized cross-correlation
+    6. Returns 1.0-ncc (for minimization) and auxiliary data
+
+    Args:
+        means_ref: Reference GMM means
+        wgts_ref: Reference GMM weights
+        means_mov: Moving GMM means
+        wgts_mov: Moving GMM weights
+        ctrl_pts: Control points for TPS
+        ref_pix2unit: Function that converts reference pixel coords to physical units
+        mov_unit2pix: Function that converts physical units to moving pixel coords
+        ref_vol: Reference volume
+        ref_grid_pts: Reference grid points
+        mov_vol: Moving volume
+
+    Returns:
+        Validation callback function, and warping function
+    """
+
+    # Use control points if provided, otherwise use moving means
+    control_points = ctrl_pts if ctrl_pts is not None else means_mov
+    n_dim = means_mov.shape[1]
+
+    if n_dim != 3:
+        raise ValueError(
+            "make_validation_function_corr_tps only supports 3D volumes"
+        )
+
+    # Get output shape from reference volume
+    out_shape = ref_vol.shape
+
+    if blur_fun is None:
+
+        def blur_fun(x: Array) -> Array:
+            return x
+
+    # Create basis matrix for transforming means_mov
+    basis, _ = tps.make_basis_kernel(means_mov, control_points)
+
+    def warp_function(p: Float[Array, " p"]) -> Float[Array, " z y x"]:
+        """Warp moving volume using TPS parameters."""
+        affine, translation, rbf_wgts = tps.unpack_params_3d(p)
+        means_trans = tps.transform_basis(basis, affine, translation, rbf_wgts)
+
+        # compute forward displacement vectors, then negate them to get inverse
+        disp_inv = jnp.negative(means_trans - means_mov)
+
+        warped_mov_vol = tps.resample_volume(
+            mov_vol=mov_vol,
+            ref_grid_pts=ref_grid_pts,
+            ref_pix2unit=ref_pix2unit,
+            mov_unit2pix=mov_unit2pix,
+            out_shape=out_shape,
+            interpolation_mode="linear",
+            inv_pts=means_trans,
+            inv_vecs=disp_inv,
+        )
+        return blur_fun(warped_mov_vol)
+
+    def validation_function(
+        p: Float[Array, " p"],
+    ) -> tuple[Float[Array, ""], AuxiliaryData]:
+        """Validation function that warps volumes and computes correlation."""
+        warped_mov_vol = warp_function(p)
+        ncc = normalized_cross_correlation(ref_vol, warped_mov_vol)
+        return ncc, jnp.array(jnp.nan)
+
+    return validation_function, warp_function
+
+
+def make_validation_function_corr_rigid(
+    means_ref: Float[Array, "v d"],
+    wgts_ref: Float[Array, " v"],
+    means_mov: Float[Array, "m d"],
+    wgts_mov: Float[Array, " m"],
+    ref_pix2unit: Callable[[Float[Array, " d"]], Float[Array, " d"]],
+    mov_unit2pix: Callable[[Float[Array, " d"]], Float[Array, " d"]],
+    ref_vol: Float[Array, "z y x"] | Float[Array, "y x"],
+    ref_grid_pts: Float[Array, "z y x d"] | Float[Array, "y x d"],
+    mov_vol: Float[Array, "z y x"] | Float[Array, "y x"],
+    blur_fun: Callable[[Array], Array] | None = None,
+) -> tuple[
+    ValidationCallback, Callable[[Float[Array, " p"]], Float[Array, " z y x"]]
+]:
+    """Create a validation function for rigid transforms that warps volumes and computes correlation.
+
+    This function creates a validation function that:
+    1. Takes rigid transform parameters (scale, rotation angles, translation)
+    2. Computes inverse rigid transform
+    3. Warps moving volume onto reference using inverse transform
+    4. Computes normalized cross-correlation
+    5. Returns NCC and auxiliary data
+
+    Args:
+        means_ref: Reference GMM means (not used for rigid, but kept for signature consistency)
+        wgts_ref: Reference GMM weights (not used for rigid, but kept for signature consistency)
+        means_mov: Moving GMM means (not used for rigid, but kept for signature consistency)
+        wgts_mov: Moving GMM weights (not used for rigid, but kept for signature consistency)
+        ref_pix2unit: Function that converts reference pixel coords to physical units
+        mov_unit2pix: Function that converts physical units to moving pixel coords
+        ref_vol: Reference volume
+        ref_grid_pts: Reference grid points
+        mov_vol: Moving volume
+        blur_fun: Optional blur function to apply to warped volume
+
+    Returns:
+        Validation callback function, and warping function
+    """
+
+    n_dim = means_mov.shape[1]
+
+    if n_dim != 3:
+        raise ValueError(
+            "make_validation_function_corr_rigid only supports 3D volumes"
+        )
+
+    # Get output shape from reference volume
+    out_shape = ref_vol.shape
+
+    if blur_fun is None:
+
+        def blur_fun(x: Array) -> Array:
+            return x
+
+    def warp_function(p: Float[Array, " p"]) -> Float[Array, " z y x"]:
+        """Warp moving volume using rigid transform parameters."""
+        # Unpack rigid parameters
+        scale, alpha, beta, gamma, translation = rigid.unpack_params_3d(p)
+
+        # Build rotation matrix from angles
+        rotation = rotation_matrix_3d(alpha, beta, gamma)
+
+        # Resample volume using inverse rigid transform
+        warped_mov_vol = rigid.resample_volume(
+            mov_vol=mov_vol,
+            ref_grid_pts=ref_grid_pts,
+            ref_pix2unit=ref_pix2unit,
+            mov_unit2pix=mov_unit2pix,
+            out_shape=out_shape,
+            interpolation_mode="linear",
+            scale=scale,
+            rotation=rotation,
+            translation=translation,
+        )
+        return blur_fun(warped_mov_vol)
+
+    def validation_function(
+        p: Float[Array, " p"],
+    ) -> tuple[Float[Array, ""], Float[Array, ""]]:
+        """Validation function that warps volumes and computes correlation."""
+        warped_mov_vol = warp_function(p)
+        ncc = normalized_cross_correlation(ref_vol, warped_mov_vol)
+        return ncc, jnp.array(jnp.nan)
+
+    return validation_function, warp_function

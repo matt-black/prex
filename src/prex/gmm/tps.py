@@ -3,12 +3,15 @@
 Transform a GMM by a thin plate spline transformation.
 """
 
+from collections.abc import Callable
+
 import jax
 import jax.numpy as jnp
+from jax.scipy.ndimage import map_coordinates
 from jax.tree_util import Partial
 from jaxtyping import Array, Float
 
-from ..util import sqdist
+from ..util import gaussian_rbf_interpolate, sqdist
 
 
 def tps_rbf(
@@ -264,4 +267,71 @@ def initialize_params(
     init_wgt = jnp.ones((n_ctrl_pts - n_dim - 1, n_dim)) * epsilon
     return jnp.concatenate(
         [init_aff.ravel(), init_trans.ravel(), init_wgt.ravel()], axis=0
+    )
+
+
+def resample_volume(
+    mov_vol: Float[Array, "z y x"],
+    ref_grid_pts: Float[Array, "n 3"],
+    ref_pix2unit: Callable[[Float[Array, " 3"]], Float[Array, " 3"]],
+    mov_unit2pix: Callable[[Float[Array, " 3"]], Float[Array, " 3"]],
+    out_shape: tuple[int, int, int],
+    interpolation_mode: str,
+    inv_pts: Float[Array, "n 3"],
+    inv_vecs: Float[Array, "n 3"],
+) -> Float[Array, "{out_shape[0]} {out_shape[1]} {out_shape[2]}"]:
+    """Resample a volume using inverse thin plate spline transformation.
+
+    Args:
+        mov_vol: Moving volume to resample, shape (z, y, x)
+        ref_grid_pts: Reference grid points in physical units, shape (n, 3)
+        ref_pix2unit: Function that converts reference pixel coords to physical units
+        mov_unit2pix: Function that converts physical units to moving pixel coords
+        out_shape: Output volume shape (z, y, x)
+        interpolation_mode: Interpolation mode for grid_sample ('linear' or 'nearest')
+        inv_pts: Control points for inverse transform in physical units, shape (n, 3)
+        inv_vecs: Inverse displacement vectors at control points, shape (n, 3)
+
+    Returns:
+        Resampled volume with shape out_shape
+    """
+
+    # Convert output grid to physical units (reference space)
+    # Flatten and apply conversion function via vmap
+    out_grid_flat = ref_grid_pts.reshape(-1, 3)
+    out_grid_physical = jax.vmap(ref_pix2unit)(out_grid_flat)  # shape (-1, 3)
+
+    # Interpolate inverse displacement vectors at output grid points
+    inv_displacements = gaussian_rbf_interpolate(
+        query_points=out_grid_physical,
+        control_points=inv_pts,
+        control_values=inv_vecs,
+    )  # shape (-1, 3)
+
+    # Apply inverse displacement to get coordinates in moving volume space (physical units)
+    mov_coords_physical = out_grid_physical + inv_displacements
+
+    # Convert to moving volume pixel coordinates via vmap
+    mov_coords_pixels = jax.vmap(mov_unit2pix)(
+        mov_coords_physical
+    )  # shape (-1, 3)
+
+    # Reshape to grid shape (z, y, x, 3)
+    mov_coords_grid = mov_coords_pixels.reshape(
+        out_shape[0], out_shape[1], out_shape[2], 3
+    )
+
+    # map_coordinates expects coordinates as (ndim, ...) not (..., ndim)
+    # Transpose from (z, y, x, 3) to (3, z, y, x)
+    coords_for_map = jnp.moveaxis(mov_coords_grid, -1, 0)
+
+    # Sample the moving volume at the computed coordinates
+    # order: 0 = nearest, 1 = linear
+    order = 1 if interpolation_mode == "linear" else 0
+
+    return map_coordinates(
+        mov_vol,
+        coords_for_map,
+        order=order,
+        mode="nearest",  # How to handle out-of-bounds: use nearest edge value
     )

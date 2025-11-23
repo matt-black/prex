@@ -3,8 +3,11 @@
 Transform a GMM by a global rigid transform (scaling + rotation + translation). Also use this transform model to register one GMM onto another.
 """
 
+from collections.abc import Callable
+
 import jax
 import jax.numpy as jnp
+from jax.scipy.ndimage import map_coordinates
 from jax.tree_util import Partial
 from jaxtyping import Array, Float
 
@@ -178,4 +181,82 @@ def pack_params_3d(
             gamma[jnp.newaxis],
             trans,
         ]
+    )
+
+
+def resample_volume(
+    mov_vol: Float[Array, "z y x"],
+    ref_grid_pts: Float[Array, "n 3"],
+    ref_pix2unit: Callable[[Float[Array, " 3"]], Float[Array, " 3"]],
+    mov_unit2pix: Callable[[Float[Array, " 3"]], Float[Array, " 3"]],
+    out_shape: tuple[int, int, int],
+    interpolation_mode: str,
+    scale: Float[Array, ""],
+    rotation: Float[Array, "3 3"],
+    translation: Float[Array, " 3"],
+) -> Float[Array, "{out_shape[0]} {out_shape[1]} {out_shape[2]}"]:
+    """Resample a volume using inverse rigid transformation.
+
+    Args:
+        mov_vol: Moving volume to resample, shape (z, y, x)
+        ref_grid_pts: Reference grid points in physical units, shape (n, 3)
+        ref_pix2unit: Function that converts reference pixel coords to physical units
+        mov_unit2pix: Function that converts physical units to moving pixel coords
+        out_shape: Output volume shape (z, y, x)
+        interpolation_mode: Interpolation mode ('linear' or 'nearest')
+        scale: Forward transform scale factor
+        rotation: Forward transform rotation matrix, shape (3, 3)
+        translation: Forward transform translation vector, shape (3,)
+
+    Returns:
+        Resampled volume with shape out_shape
+    """
+
+    # Convert output grid to physical units (reference space)
+    # Flatten and apply conversion function via vmap
+    out_grid_flat = ref_grid_pts.reshape(-1, 3)
+    out_grid_physical = jax.vmap(ref_pix2unit)(out_grid_flat)  # shape (-1, 3)
+
+    # Compute inverse rigid transform
+    # For forward: y = s * R @ x + t
+    # Inverse: x = (1/s) * R^T @ (y - t)
+    inv_scale = 1.0 / scale
+    inv_rotation = rotation.T
+    inv_translation = -inv_rotation @ translation
+
+    # Apply inverse rigid transform to get coordinates in moving volume space (physical units)
+    # mov_coords = inv_scale * (inv_rotation @ (ref_coords - translation))
+    #            = inv_scale * (inv_rotation @ ref_coords + inv_translation)
+    def apply_inverse_transform(
+        ref_coord: Float[Array, " 3"],
+    ) -> Float[Array, " 3"]:
+        return inv_scale * (inv_rotation @ ref_coord + inv_translation)
+
+    mov_coords_physical = jax.vmap(apply_inverse_transform)(
+        out_grid_physical
+    )  # shape (-1, 3)
+
+    # Convert to moving volume pixel coordinates via vmap
+    mov_coords_pixels = jax.vmap(mov_unit2pix)(
+        mov_coords_physical
+    )  # shape (-1, 3)
+
+    # Reshape to grid shape (z, y, x, 3)
+    mov_coords_grid = mov_coords_pixels.reshape(
+        out_shape[0], out_shape[1], out_shape[2], 3
+    )
+
+    # map_coordinates expects coordinates as (ndim, ...) not (..., ndim)
+    # Transpose from (z, y, x, 3) to (3, z, y, x)
+    coords_for_map = jnp.moveaxis(mov_coords_grid, -1, 0)
+
+    # Sample the moving volume at the computed coordinates
+    # order: 0 = nearest, 1 = linear
+    order = 1 if interpolation_mode == "linear" else 0
+
+    return map_coordinates(
+        mov_vol,
+        coords_for_map,
+        order=order,
+        mode="nearest",  # How to handle out-of-bounds: use nearest edge value
     )

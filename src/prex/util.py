@@ -3,6 +3,8 @@ import jax.numpy as jnp
 from jax.tree_util import Partial
 from jaxtyping import Array, Float, Int
 
+from ._tree import build_tree, query_neighbors
+
 
 def sqdist(
     x: Float[Array, "n d"], y: Float[Array, "m d"]
@@ -228,9 +230,47 @@ def grid_sample(
     return output
 
 
+def normalized_cross_correlation(
+    vol1: Float[Array, "z y x"] | Float[Array, "y x"],
+    vol2: Float[Array, "z y x"] | Float[Array, "y x"],
+) -> Float[Array, ""]:
+    """Compute normalized cross-correlation between two volumes or images.
+
+    Args:
+        vol1: First volume/image
+        vol2: Second volume/image (must have same shape as vol1)
+
+    Returns:
+        Normalized cross-correlation coefficient (scalar)
+    """
+    # Flatten volumes
+    v1_flat = vol1.ravel()
+    v2_flat = vol2.ravel()
+
+    # Normalize (zero mean, unit variance)
+    v1_mean = jnp.mean(v1_flat)
+    v2_mean = jnp.mean(v2_flat)
+    v1_centered = v1_flat - v1_mean
+    v2_centered = v2_flat - v2_mean
+
+    v1_std = jnp.std(v1_flat)
+    v2_std = jnp.std(v2_flat)
+
+    # Avoid division by zero
+    v1_std = jnp.maximum(v1_std, 1e-8)
+    v2_std = jnp.maximum(v2_std, 1e-8)
+
+    v1_norm = v1_centered / v1_std
+    v2_norm = v2_centered / v2_std
+
+    # Compute correlation
+    ncc = jnp.mean(v1_norm * v2_norm)
+    return ncc
+
+
 @Partial(jax.jit, static_argnums=(3, 4))
 def gaussian_rbf_interpolate(
-    query_points, control_points, control_values, epsilon=None, k_neighbors=50
+    query_points, control_points, control_values, bandwidth=None, k_neighbors=50
 ):
     """Do sparse gaussian RBF interpolation using k-nearest neighbors.
 
@@ -242,16 +282,15 @@ def gaussian_rbf_interpolate(
         query_points: (M, d) array of points where you want to interpolate
         control_points: (N, d) array of control point locations (your q points)
         control_values: (N, d) array of values at control points (your w vectors)
-        epsilon: shape parameter (if None, auto-computed from median distance)
+        bandwidth: Gaussian bandwidth σ (if None, auto-computed as median distance)
         k_neighbors: number of nearest neighbors to use for local interpolation (default: 50)
 
     Returns:
         (M, d) array of interpolated values
     """
-    from prex.fgt.tree import build_tree, query_neighbors
 
-    # Auto-compute epsilon if not provided
-    if epsilon is None:
+    # Auto-compute bandwidth if not provided
+    if bandwidth is None:
         # Use median pairwise distance heuristic
         sample_size = min(1000, control_points.shape[0])
         indices = jax.random.permutation(
@@ -261,7 +300,7 @@ def gaussian_rbf_interpolate(
         dists = jnp.linalg.norm(
             sample_points[:, None, :] - sample_points[None, :, :], axis=-1
         )
-        epsilon = 1.0 / jnp.median(dists[dists > 0])
+        bandwidth = jnp.median(dists)
 
     # Build KD tree for control points
     tree = build_tree(control_points, optimize=True)
@@ -280,10 +319,11 @@ def gaussian_rbf_interpolate(
         nn_values = control_values[nn_indices]  # (k, d)
 
         # Compute RBF matrix for local neighborhood (k x k)
+        # Using Gaussian RBF: φ(r) = exp(-r²/(2σ²))
         dist_matrix = jnp.linalg.norm(
             nn_points[:, None, :] - nn_points[None, :, :], axis=-1
         )
-        phi_matrix = jnp.exp(-((epsilon * dist_matrix) ** 2))
+        phi_matrix = jnp.exp(-(dist_matrix**2) / (2 * bandwidth**2))
 
         # Solve for local weights (k x d)
         # Add regularization for numerical stability
@@ -296,7 +336,7 @@ def gaussian_rbf_interpolate(
         query_dist = jnp.linalg.norm(
             nn_points - query_point[None, :], axis=-1
         )  # (k,)
-        query_phi = jnp.exp(-((epsilon * query_dist) ** 2))  # (k,)
+        query_phi = jnp.exp(-(query_dist**2) / (2 * bandwidth**2))  # (k,)
 
         # Interpolated value (d,)
         return query_phi @ local_weights
