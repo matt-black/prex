@@ -714,6 +714,7 @@ def make_validation_function_corr_tps(
     ref_grid_pts: Float[Array, "z y x d"] | Float[Array, "y x d"],
     mov_vol: Float[Array, "z y x"] | Float[Array, "y x"],
     blur_fun: Callable[[Array], Array] | None = None,
+    interpolation_order: int = 0,
 ) -> tuple[
     ValidationCallback, Callable[[Float[Array, " p"]], Float[Array, " z y x"]]
 ]:
@@ -738,6 +739,7 @@ def make_validation_function_corr_tps(
         ref_vol: Reference volume
         ref_grid_pts: Reference grid points
         mov_vol: Moving volume
+        interpolation_mode: Interpolation mode for resampling
 
     Returns:
         Validation callback function, and warping function
@@ -777,9 +779,9 @@ def make_validation_function_corr_tps(
             ref_pix2unit=ref_pix2unit,
             mov_unit2pix=mov_unit2pix,
             out_shape=out_shape,
-            interpolation_mode="linear",
             inv_pts=means_trans,
             inv_vecs=disp_inv,
+            interpolation_order=interpolation_order,
         )
         return blur_fun(warped_mov_vol)
 
@@ -805,6 +807,7 @@ def make_validation_function_corr_rigid(
     ref_grid_pts: Float[Array, "z y x d"] | Float[Array, "y x d"],
     mov_vol: Float[Array, "z y x"] | Float[Array, "y x"],
     blur_fun: Callable[[Array], Array] | None = None,
+    interpolation_order: int = 0,
 ) -> tuple[
     ValidationCallback, Callable[[Float[Array, " p"]], Float[Array, " z y x"]]
 ]:
@@ -828,6 +831,7 @@ def make_validation_function_corr_rigid(
         ref_grid_pts: Reference grid points
         mov_vol: Moving volume
         blur_fun: Optional blur function to apply to warped volume
+        interpolation_mode: Interpolation mode for resampling
 
     Returns:
         Validation callback function, and warping function
@@ -863,10 +867,10 @@ def make_validation_function_corr_rigid(
             ref_pix2unit=ref_pix2unit,
             mov_unit2pix=mov_unit2pix,
             out_shape=out_shape,
-            interpolation_mode="linear",
             scale=scale,
             rotation=rotation,
             translation=translation,
+            interpolation_order=interpolation_order,
         )
         return blur_fun(warped_mov_vol)
 

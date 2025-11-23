@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from .util import sqdist
+from ..util import sqdist
 
 __all__ = ["MatchingMatrix", "expectation"]
 

@@ -190,10 +190,10 @@ def resample_volume(
     ref_pix2unit: Callable[[Float[Array, " 3"]], Float[Array, " 3"]],
     mov_unit2pix: Callable[[Float[Array, " 3"]], Float[Array, " 3"]],
     out_shape: tuple[int, int, int],
-    interpolation_mode: str,
     scale: Float[Array, ""],
     rotation: Float[Array, "3 3"],
     translation: Float[Array, " 3"],
+    interpolation_order: int = 0,
 ) -> Float[Array, "{out_shape[0]} {out_shape[1]} {out_shape[2]}"]:
     """Resample a volume using inverse rigid transformation.
 
@@ -203,7 +203,7 @@ def resample_volume(
         ref_pix2unit: Function that converts reference pixel coords to physical units
         mov_unit2pix: Function that converts physical units to moving pixel coords
         out_shape: Output volume shape (z, y, x)
-        interpolation_mode: Interpolation mode ('linear' or 'nearest')
+        interpolation_order: Interpolation order (0 = nearest, 1 = linear)
         scale: Forward transform scale factor
         rotation: Forward transform rotation matrix, shape (3, 3)
         translation: Forward transform translation vector, shape (3,)
@@ -250,13 +250,10 @@ def resample_volume(
     # Transpose from (z, y, x, 3) to (3, z, y, x)
     coords_for_map = jnp.moveaxis(mov_coords_grid, -1, 0)
 
-    # Sample the moving volume at the computed coordinates
-    # order: 0 = nearest, 1 = linear
-    order = 1 if interpolation_mode == "linear" else 0
-
+    # sample moving volume at computed coordinates
     return map_coordinates(
         mov_vol,
         coords_for_map,
-        order=order,
-        mode="nearest",  # How to handle out-of-bounds: use nearest edge value
+        order=interpolation_order,
+        mode="nearest",  # handle out-of-bounds: use nearest edge value
     )
