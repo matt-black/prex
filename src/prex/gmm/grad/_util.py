@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from jax.tree_util import Partial
 from jaxtyping import Array, Float
 
 
@@ -104,3 +105,77 @@ def compute_weights_alpha(
     alpha_ij = jax.vmap(compute_alpha_ij)(means_p, wgts_p, A_i, B_i)
 
     return alpha_ij, A_i, B_i
+
+
+def compute_overlap_weights(
+    means_p: Float[Array, "n d"],
+    wgts_p: Float[Array, " n"],
+    means_q_trans: Float[Array, "m d"],
+    wgts_q: Float[Array, " m"],
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+) -> Float[Array, "n m"]:
+    """Compute overlap weights O_ij for L2 distance gradient.
+
+    O_ij = w_p^i * w_q^j * N(mu_p^i - mu_q^j; 0, (var_p + var_q)I)
+
+    Args:
+        means_p: Reference GMM means
+        wgts_p: Reference GMM weights
+        means_q_trans: Transformed moving GMM means
+        wgts_q: Moving GMM weights
+        var_p: Reference variance
+        var_q: Moving variance
+        n_dim: Dimensionality
+
+    Returns:
+        Overlap weights O_ij, shape (n, m)
+    """
+    # Combined variance for convolution
+    var_combined = var_p + var_q
+
+    # Normalization constant for spherical Gaussian
+    norm_const = 1.0 / ((2.0 * jnp.pi * var_combined) ** (n_dim / 2.0))
+
+    def compute_O_ij(
+        mu_p_i: Float[Array, " d"],
+        wgt_p_i: float,
+    ) -> Float[Array, " m"]:
+        # compute squared Euclidean distances ||mu_p^i - mu_q^j||^2
+        diffs = means_q_trans - mu_p_i
+        sq_dists = jnp.sum(diffs**2, axis=1)
+
+        # gaussian term: exp(-||delta||^2 / (2 * var_combined))
+        gaussian_vals = jnp.exp(-sq_dists / (2.0 * var_combined))
+
+        # combine: w_p^i * w_q^j * norm_const * gaussian_val
+        return wgt_p_i * wgts_q * norm_const * gaussian_vals
+
+    return jax.vmap(compute_O_ij)(means_p, wgts_p)
+
+
+@Partial(jax.jit, static_argnums=(3,))
+def compute_self_overlap_weights(
+    means: Float[Array, "m d"],
+    wgts: Float[Array, " m"],
+    var: float,
+    n_dim: int,
+) -> Float[Array, "m m"]:
+    """Compute overlap weights for self-energy gradient.
+
+    O_jk = w_j * w_k * N(mu_j - mu_k; 0, 2*var*I)
+    """
+    var_combined = 2.0 * var
+    norm_const = 1.0 / ((2.0 * jnp.pi * var_combined) ** (n_dim / 2.0))
+
+    def compute_O_jk(
+        mu_j: Float[Array, " d"],
+        wgt_j: float,
+    ) -> Float[Array, " m"]:
+        diffs = means - mu_j
+        sq_dists = jnp.sum(diffs**2, axis=1)
+        gaussian_vals = jnp.exp(-sq_dists / (2.0 * var_combined))
+        return wgt_j * wgts * norm_const * gaussian_vals
+
+    return jax.vmap(compute_O_jk)(means, wgts)

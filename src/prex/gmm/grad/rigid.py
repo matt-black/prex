@@ -11,7 +11,11 @@ from jax.tree_util import Partial
 from jaxtyping import Array, Float
 
 from ...util import rotation_matrix_2d, rotation_matrix_3d
-from ._util import compute_weights_alpha
+from ._util import (
+    compute_overlap_weights,
+    compute_self_overlap_weights,
+    compute_weights_alpha,
+)
 
 
 def gradient_translation(
@@ -406,6 +410,347 @@ def gradient_all_3d(
         var_q,
         n_dim,
         alpha_ij,
+    )
+
+    grad_alpha, grad_beta, grad_gamma = gradient_rotation_angles_3d(
+        grad_R, alpha, beta, gamma
+    )
+
+    return grad_s, grad_alpha, grad_beta, grad_gamma, grad_t
+
+
+# ============================================================================
+# L2 Distance Gradients
+# ============================================================================
+
+
+def gradient_translation_l2(
+    means_p: Float[Array, "n d"],
+    wgts_p: Float[Array, " n"],
+    means_q_trans: Float[Array, "m d"],
+    wgts_q: Float[Array, " m"],
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+    overlap_ij: Float[Array, "n m"] | None = None,
+) -> Float[Array, " d"]:
+    """Compute gradient of L2 distance w.r.t. translation vector.
+
+    Args:
+        means_p: Reference GMM means (fixed)
+        wgts_p: Reference GMM weights
+        means_q_trans: Transformed moving GMM means
+        wgts_q: Moving GMM weights
+        var_p: Reference variance (isotropic)
+        var_q: Moving variance (isotropic)
+        n_dim: Dimensionality
+        overlap_ij: Pre-computed overlap weights (optional)
+
+    Returns:
+        Gradient vector w.r.t. translation, shape (d,)
+    """
+    if overlap_ij is None:
+        overlap_ij = compute_overlap_weights(
+            means_p, wgts_p, means_q_trans, wgts_q, var_p, var_q, n_dim
+        )
+
+    # Compute delta_ij = mu_q_trans^j - mu_p^i for all i, j
+    # Shape: (n, m, d)
+    delta_ij = means_q_trans[jnp.newaxis, :, :] - means_p[:, jnp.newaxis, :]
+
+    # Gradient: (-2 / (var_p + var_q)) * sum_ij overlap_ij * delta_ij
+    # Shape: (d,)
+    factor = 2.0 / (var_p + var_q)
+    grad_t = factor * jnp.sum(
+        overlap_ij[:, :, jnp.newaxis] * delta_ij, axis=(0, 1)
+    )
+
+    return grad_t
+
+
+def gradient_scale_l2(
+    means_p: Float[Array, "n d"],
+    wgts_p: Float[Array, " n"],
+    means_q: Float[Array, "m d"],
+    wgts_q: Float[Array, " m"],
+    means_q_trans: Float[Array, "m d"],
+    rotation: Float[Array, "d d"],
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+    overlap_ij: Float[Array, "n m"] | None = None,
+) -> Float[Array, ""]:
+    """Compute gradient of L2 distance w.r.t. scale parameter.
+
+    Args:
+        means_p: Reference GMM means (fixed)
+        wgts_p: Reference GMM weights
+        means_q: Original moving GMM means (before transformation)
+        means_q_trans: Transformed moving GMM means
+        rotation: Rotation matrix
+        var_p: Reference variance (isotropic)
+        var_q: Moving variance (isotropic)
+        n_dim: Dimensionality
+        overlap_ij: Pre-computed overlap weights (optional)
+
+    Returns:
+        Gradient scalar w.r.t. scale
+    """
+    if overlap_ij is None:
+        overlap_ij = compute_overlap_weights(
+            means_p, wgts_p, means_q_trans, wgts_q, var_p, var_q, n_dim
+        )
+
+    # Compute delta_ij = mu_q_trans^j - mu_p^i for all i, j
+    # Shape: (n, m, d)
+    delta_ij = means_q_trans[jnp.newaxis, :, :] - means_p[:, jnp.newaxis, :]
+
+    # Compute R * mu_q^j for all j
+    # Shape: (m, d)
+    R_mu_q = jax.vmap(lambda mu: rotation @ mu)(means_q)
+
+    # Gradient: (-2 / (var_p + var_q)) * sum_ij overlap_ij * delta_ij^T * R * mu_q^j
+    # Shape: scalar
+    factor = 2.0 / (var_p + var_q)
+    grad_cross = factor * jnp.sum(
+        overlap_ij * jnp.sum(delta_ij * R_mu_q[jnp.newaxis, :, :], axis=2)
+    )
+
+    # Self-energy gradient
+    # d(E_self)/ds = -s/var_q * sum_jk O_jk * ||mu_q^j - mu_q^k||^2
+    overlap_jk = compute_self_overlap_weights(
+        means_q_trans, wgts_q, var_q, n_dim
+    )
+
+    # general formula:
+    # d(E_self)/ds = sum_j d(E_self)/d(mu_q_trans^j) * d(mu_q_trans^j)/ds
+    # d(E_self)/d(mu_q_trans^j) = -1/var_q * sum_k O_jk * (mu_q_trans^j - mu_q_trans^k)
+    # d(mu_q_trans^j)/ds = R * mu_q^j
+
+    grad_self_per_point = (-1.0 / var_q) * jnp.sum(
+        overlap_jk[:, :, jnp.newaxis]
+        * (means_q_trans[:, jnp.newaxis, :] - means_q_trans[jnp.newaxis, :, :]),
+        axis=1,
+    )
+    grad_self = jnp.sum(grad_self_per_point * R_mu_q)
+
+    return grad_self + grad_cross
+
+
+def gradient_rotation_matrix_l2(
+    means_p: Float[Array, "n d"],
+    wgts_p: Float[Array, " n"],
+    means_q: Float[Array, "m d"],
+    wgts_q: Float[Array, " m"],
+    means_q_trans: Float[Array, "m d"],
+    scale: float,
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+    overlap_ij: Float[Array, "n m"] | None = None,
+) -> Float[Array, "d d"]:
+    """Compute gradient of L2 distance w.r.t. rotation matrix.
+
+    Args:
+        means_p: Reference GMM means (fixed)
+        wgts_p: Reference GMM weights
+        means_q: Original moving GMM means (before transformation)
+        means_q_trans: Transformed moving GMM means
+        scale: Scale parameter
+        var_p: Reference variance (isotropic)
+        var_q: Moving variance (isotropic)
+        n_dim: Dimensionality
+        overlap_ij: Pre-computed overlap weights (optional)
+
+    Returns:
+        Gradient matrix w.r.t. rotation, shape (d, d)
+    """
+    if overlap_ij is None:
+        overlap_ij = compute_overlap_weights(
+            means_p, wgts_p, means_q_trans, wgts_q, var_p, var_q, n_dim
+        )
+
+    # Compute delta_ij = mu_q_trans^j - mu_p^i for all i, j
+    # Shape: (n, m, d)
+    delta_ij = means_q_trans[jnp.newaxis, :, :] - means_p[:, jnp.newaxis, :]
+
+    # Gradient: (-2 * s / (var_p + var_q)) * sum_ij overlap_ij * delta_ij * (mu_q^j)^T
+    # This is a sum of outer products
+    # Shape: (d, d)
+    factor = 2.0 * scale / (var_p + var_q)
+    grad_R = factor * jnp.sum(
+        overlap_ij[:, :, jnp.newaxis, jnp.newaxis]
+        * delta_ij[:, :, :, jnp.newaxis]
+        * means_q[jnp.newaxis, :, jnp.newaxis, :],
+        axis=(0, 1),
+    )
+
+    return grad_R
+
+
+@Partial(jax.jit, static_argnums=(6,))
+def gradient_all_2d_l2(
+    means_p: Float[Array, "n 2"],
+    wgts_p: Float[Array, " n"],
+    means_q: Float[Array, "m 2"],
+    wgts_q: Float[Array, " m"],
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+    scale: Float[Array, ""],
+    alpha: Float[Array, ""],
+    translation: Float[Array, " 2"],
+) -> tuple[Float[Array, ""], Float[Array, ""], Float[Array, " 2"]]:
+    """Compute all gradients for 2D rigid transformation using L2 distance.
+
+    Args:
+        means_p: Reference GMM means (fixed)
+        wgts_p: Reference GMM weights
+        means_q: Original moving GMM means (before transformation)
+        wgts_q: Moving GMM weights
+        var_p: Reference variance (isotropic)
+        var_q: Moving variance (isotropic)
+        n_dim: Dimensionality (should be 2)
+        scale: Current scale parameter
+        alpha: Current rotation angle
+        translation: Current translation vector
+
+    Returns:
+        Tuple of (grad_scale, grad_alpha, grad_translation)
+    """
+    # Compute rotation matrix
+    rotation = rotation_matrix_2d(alpha)
+
+    # Transform moving means
+    means_q_trans = (
+        scale * jax.vmap(lambda mu: rotation @ mu)(means_q)
+        + translation[jnp.newaxis, :]
+    )
+
+    # Compute overlap_ij once
+    overlap_ij = compute_overlap_weights(
+        means_p, wgts_p, means_q_trans, wgts_q, var_p, var_q, n_dim
+    )
+
+    # Compute gradients
+    grad_t = gradient_translation_l2(
+        means_p, wgts_p, means_q_trans, wgts_q, var_p, var_q, n_dim, overlap_ij
+    )
+
+    grad_s = gradient_scale_l2(
+        means_p,
+        wgts_p,
+        means_q,
+        wgts_q,
+        means_q_trans,
+        rotation,
+        var_p,
+        var_q,
+        n_dim,
+        overlap_ij,
+    )
+
+    grad_R = gradient_rotation_matrix_l2(
+        means_p,
+        wgts_p,
+        means_q,
+        wgts_q,
+        means_q_trans,
+        scale,
+        var_p,
+        var_q,
+        n_dim,
+        overlap_ij,
+    )
+
+    grad_alpha = gradient_rotation_angles_2d(grad_R, alpha)
+
+    return grad_s, grad_alpha, grad_t
+
+
+@Partial(jax.jit, static_argnums=(6,))
+def gradient_all_3d_l2(
+    means_p: Float[Array, "n 3"],
+    wgts_p: Float[Array, " n"],
+    means_q: Float[Array, "m 3"],
+    wgts_q: Float[Array, " m"],
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+    scale: Float[Array, ""],
+    alpha: Float[Array, ""],
+    beta: Float[Array, ""],
+    gamma: Float[Array, ""],
+    translation: Float[Array, " 3"],
+) -> tuple[
+    Float[Array, ""],
+    Float[Array, ""],
+    Float[Array, ""],
+    Float[Array, ""],
+    Float[Array, " 3"],
+]:
+    """Compute all gradients for 3D rigid transformation using L2 distance.
+
+    Args:
+        means_p: Reference GMM means (fixed)
+        wgts_p: Reference GMM weights
+        means_q: Original moving GMM means (before transformation)
+        wgts_q: Moving GMM weights
+        var_p: Reference variance (isotropic)
+        var_q: Moving variance (isotropic)
+        n_dim: Dimensionality (should be 3)
+        scale: Current scale parameter
+        alpha: Current rotation angle around z-axis
+        beta: Current rotation angle around y-axis
+        gamma: Current rotation angle around x-axis
+        translation: Current translation vector
+
+    Returns:
+        Tuple of (grad_scale, grad_alpha, grad_beta, grad_gamma, grad_translation)
+    """
+    # Compute rotation matrix
+    rotation = rotation_matrix_3d(alpha, beta, gamma)
+
+    # Transform moving means
+    means_q_trans = (
+        scale * jax.vmap(lambda mu: rotation @ mu)(means_q)
+        + translation[jnp.newaxis, :]
+    )
+
+    # Compute overlap_ij once
+    overlap_ij = compute_overlap_weights(
+        means_p, wgts_p, means_q_trans, wgts_q, var_p, var_q, n_dim
+    )
+
+    # Compute gradients
+    grad_t = gradient_translation_l2(
+        means_p, wgts_p, means_q_trans, wgts_q, var_p, var_q, n_dim, overlap_ij
+    )
+
+    grad_s = gradient_scale_l2(
+        means_p,
+        wgts_p,
+        means_q,
+        wgts_q,
+        means_q_trans,
+        rotation,
+        var_p,
+        var_q,
+        n_dim,
+        overlap_ij,
+    )
+
+    grad_R = gradient_rotation_matrix_l2(
+        means_p,
+        wgts_p,
+        means_q,
+        wgts_q,
+        means_q_trans,
+        scale,
+        var_p,
+        var_q,
+        n_dim,
+        overlap_ij,
     )
 
     grad_alpha, grad_beta, grad_gamma = gradient_rotation_angles_3d(

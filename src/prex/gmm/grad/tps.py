@@ -10,7 +10,14 @@ import jax.numpy as jnp
 from jax.tree_util import Partial
 from jaxtyping import Array, Float
 
-from ._util import compute_kl_divergence_spherical, compute_weights_alpha
+from prex.gmm.tps import unpack_params_2d, unpack_params_3d
+
+from ._util import (
+    compute_kl_divergence_spherical,
+    compute_overlap_weights,
+    compute_self_overlap_weights,
+    compute_weights_alpha,
+)
 
 
 @Partial(jax.jit, static_argnums=(7,))
@@ -389,6 +396,218 @@ def gradient_all_3d_klg(
     # Compute full gradient vector (n_dim=3 is passed as literal)
     grad_params = gradient_all_params_klg(
         means_p, wgts_p, means_q, wgts_q, basis, var_p, var_q, 3, params
+    )
+
+    # Unpack gradients (same structure as variational case)
+    p_per_dim = basis.shape[1]
+    grad_reshaped = grad_params.reshape(3, p_per_dim)
+
+    # Extract translation gradients (first element per dimension)
+    grad_translation = grad_reshaped[:, 0]  # shape (3,)
+
+    # Extract affine gradients (elements 1:4 per dimension)
+    grad_affine = grad_reshaped[:, 1:4].T  # shape (3, 3)
+
+    # Extract RBF weight gradients (remaining elements)
+    grad_rbf_weights = grad_reshaped[:, 4:].T  # shape (n_ctrl-4, 3)
+
+    return grad_affine, grad_translation, grad_rbf_weights
+
+
+# ============================================================================
+# L2 Distance Gradients
+# ============================================================================
+
+
+@Partial(jax.jit, static_argnums=(7,))
+def gradient_all_params_l2(
+    means_p: Float[Array, "n d"],
+    wgts_p: Float[Array, " n"],
+    means_q: Float[Array, "m d"],
+    wgts_q: Float[Array, " m"],
+    basis: Float[Array, "m p_per_dim"],
+    var_p: float,
+    var_q: float,
+    n_dim: int,
+    params: Float[Array, " p"],
+) -> Float[Array, " p"]:
+    """Compute gradients for all TPS parameters using L2 distance.
+
+    Args:
+        means_p: Reference GMM means (fixed)
+        wgts_p: Reference GMM weights
+        means_q: Original moving GMM means (before transformation)
+        wgts_q: Moving GMM weights
+        basis: Basis matrix from make_basis_kernel, shape (m, p_per_dim)
+        var_p: Reference variance (isotropic)
+        var_q: Moving variance (isotropic)
+        n_dim: Dimensionality
+        params: Current TPS parameters, shape (p,) where p = n_dim * p_per_dim
+
+    Returns:
+        Gradient vector w.r.t. all parameters, shape (p,)
+    """
+    m, p_per_dim = basis.shape
+
+    # Reshape parameters: (n_dim, p_per_dim)
+    params_reshaped = params.reshape(n_dim, p_per_dim)
+
+    # Transform moving means: means_trans[j, ell] = basis[j, :] @ params_reshaped[ell, :]
+    means_q_trans = basis @ params_reshaped.T  # shape (m, n_dim)
+
+    # Compute overlap weights O_ij
+    overlap_ij = compute_overlap_weights(
+        means_p, wgts_p, means_q_trans, wgts_q, var_p, var_q, n_dim
+    )
+
+    # Compute residuals: delta_ij = means_q_trans[j] - means_p[i]
+    # Shape: (n, m, d)
+    delta_ij = means_q_trans[jnp.newaxis, :, :] - means_p[:, jnp.newaxis, :]
+
+    # Gradient: (-2 / (var_p + var_q)) * sum_ij overlap_ij * delta_ij^T * B_j
+    # We can write this as:
+    # grad = (-2 / (var_p + var_q)) * B^T * r
+    # where r_j = sum_i overlap_ij * delta_ij
+
+    # Shape: (m, d)
+    r_l2 = jnp.sum(overlap_ij[:, :, jnp.newaxis] * delta_ij, axis=0)
+
+    factor = 2.0 / (var_p + var_q)
+    # Note: basis.T @ r_l2 has shape (p_per_dim, n_dim)
+    # We need to flatten to (n_dim, p_per_dim) so we transpose first
+    grad_cross = factor * (basis.T @ r_l2).T.ravel()
+
+    # Self-energy gradient
+    # d(E_self)/d(theta) = sum_j d(E_self)/d(mu_q_trans^j) * d(mu_q_trans^j)/d(theta)
+    # d(E_self)/d(mu_q_trans^j) = -1/var_q * sum_k O_jk * (mu_q_trans^j - mu_q_trans^k)
+    # d(mu_q_trans^j)/d(theta) = B_j
+
+    overlap_jk = compute_self_overlap_weights(
+        means_q_trans, wgts_q, var_q, n_dim
+    )
+
+    # r_self_j = sum_k O_jk * (mu_q_trans^j - mu_q_trans^k)
+    # Shape: (m, d)
+    r_self = jnp.sum(
+        overlap_jk[:, :, jnp.newaxis]
+        * (means_q_trans[:, jnp.newaxis, :] - means_q_trans[jnp.newaxis, :, :]),
+        axis=1,
+    )
+
+    grad_self_per_point = (-1.0 / var_q) * r_self
+    grad_self = (basis.T @ grad_self_per_point).T.ravel()
+
+    return grad_self + grad_cross
+
+
+def gradient_all_2d_l2(
+    means_p: Float[Array, "n 2"],
+    wgts_p: Float[Array, " n"],
+    means_q: Float[Array, "m 2"],
+    wgts_q: Float[Array, " m"],
+    basis: Float[Array, "m p_per_dim"],
+    var_p: float,
+    var_q: float,
+    params: Float[Array, " p"],
+) -> tuple[Float[Array, "2 2"], Float[Array, " 2"], Float[Array, "n_ctrl 2"]]:
+    """Compute all gradients for 2D TPS using L2 distance.
+
+    Args:
+        means_p: Reference GMM means (fixed)
+        wgts_p: Reference GMM weights
+        means_q: Original moving GMM means (before transformation)
+        wgts_q: Moving GMM weights
+        basis: Basis matrix from make_basis_kernel
+        var_p: Reference variance (isotropic)
+        var_q: Moving variance (isotropic)
+        params: Current TPS parameters (affine, translation, rbf_weights packed)
+
+    Returns:
+        Tuple of (grad_affine, grad_translation, grad_rbf_weights)
+    """
+    # Unpack packed parameters
+    affine, translation, rbf_weights = unpack_params_2d(params)
+
+    # Construct basis parameters (theta)
+    # theta is (n_dim, p_per_dim)
+    # theta[:, 0] = translation
+    # theta[:, 1:3] = affine.T
+    # theta[:, 3:] = rbf_weights.T
+
+    # We can construct theta.T (p_per_dim, n_dim) which is 'par' in transform_basis
+    # par = [translation; affine; rbf_weights]
+    par = jnp.concatenate(
+        [translation[jnp.newaxis, :], affine, rbf_weights], axis=0
+    )
+    # theta = par.T
+    theta = par.T
+
+    # Flatten theta for gradient_all_params_l2
+    params_basis = theta.ravel()
+
+    # Compute full gradient vector (n_dim=2 is passed as literal)
+    grad_params = gradient_all_params_l2(
+        means_p, wgts_p, means_q, wgts_q, basis, var_p, var_q, 2, params_basis
+    )
+
+    # Unpack gradients (same structure as variational case)
+    p_per_dim = basis.shape[1]
+    grad_reshaped = grad_params.reshape(2, p_per_dim)
+
+    # Extract translation gradients (first element per dimension)
+    grad_translation = grad_reshaped[:, 0]  # shape (2,)
+
+    # Extract affine gradients (elements 1:3 per dimension)
+    grad_affine = grad_reshaped[:, 1:3].T  # shape (2, 2)
+
+    # Extract RBF weight gradients (remaining elements)
+    grad_rbf_weights = grad_reshaped[:, 3:].T  # shape (n_ctrl-3, 2)
+
+    return grad_affine, grad_translation, grad_rbf_weights
+
+
+def gradient_all_3d_l2(
+    means_p: Float[Array, "n 3"],
+    wgts_p: Float[Array, " n"],
+    means_q: Float[Array, "m 3"],
+    wgts_q: Float[Array, " m"],
+    basis: Float[Array, "m p_per_dim"],
+    var_p: float,
+    var_q: float,
+    params: Float[Array, " p"],
+) -> tuple[Float[Array, "3 3"], Float[Array, " 3"], Float[Array, "n_ctrl 3"]]:
+    """Compute all gradients for 3D TPS using L2 distance.
+
+    Args:
+        means_p: Reference GMM means (fixed)
+        wgts_p: Reference GMM weights
+        means_q: Original moving GMM means (before transformation)
+        wgts_q: Moving GMM weights
+        basis: Basis matrix from make_basis_kernel
+        var_p: Reference variance (isotropic)
+        var_q: Moving variance (isotropic)
+        params: Current TPS parameters (affine, translation, rbf_weights packed)
+
+    Returns:
+        Tuple of (grad_affine, grad_translation, grad_rbf_weights)
+    """
+    # Unpack packed parameters
+    affine, translation, rbf_weights = unpack_params_3d(params)
+
+    # Construct basis parameters (theta)
+    # par = [translation; affine; rbf_weights]
+    par = jnp.concatenate(
+        [translation[jnp.newaxis, :], affine, rbf_weights], axis=0
+    )
+    # theta = par.T
+    theta = par.T
+
+    # Flatten theta for gradient_all_params_l2
+    params_basis = theta.ravel()
+
+    # Compute full gradient vector (n_dim=3 is passed as literal)
+    grad_params = gradient_all_params_l2(
+        means_p, wgts_p, means_q, wgts_q, basis, var_p, var_q, 3, params_basis
     )
 
     # Unpack gradients (same structure as variational case)
