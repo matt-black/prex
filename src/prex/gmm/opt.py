@@ -322,7 +322,6 @@ def _make_loss_function_spherical(
                     var_ref,
                     var_mov,
                 )
-                jax.debug.print("{}", dist)
                 return dist, (dist, jnp.array(0.0), p)
 
         elif metric == DistanceFunction.L2:
@@ -563,10 +562,180 @@ def spherical(
     grbf_bandwidth: float = 1.0,
     ctrl_pts: Float[Array, "c d"] | None = None,
     save_path: str | None = None,
-    validation_callback: ValidationCallback | None = None,
+    analytical_gradients: bool = False,
+    validation_callback: ValidationCallback = lambda x: (
+        jnp.array(jnp.nan),
+        jnp.array(jnp.nan),
+    ),
     optax_opt: Optimizer = Optimizer.LBFGS,
     **optim_kwargs,
 ) -> tuple[Float[Array, " p"], tuple[Float[Array, ""], Float[Array, ""], int]]:
+
+    if analytical_gradients:
+        n_dim = means_ref.shape[1]
+        if method == AlignmentMethod.TPS:
+            basis, _ = tps.make_basis_kernel(
+                means_mov, (means_mov if ctrl_pts is None else ctrl_pts)
+            )
+            from .grad.tps import (
+                gradient_all_params_klg,
+                gradient_all_params_klv,
+                gradient_all_params_l2,
+            )
+
+            if metric == DistanceFunction.KLG:
+
+                def grad_func(params: Float[Array, " p"]):
+                    return gradient_all_params_klg(
+                        means_ref,
+                        wgts_ref,
+                        means_mov,
+                        wgts_mov,
+                        basis,
+                        var_ref,
+                        var_mov,
+                        n_dim,
+                        params,
+                    )
+
+            elif metric == DistanceFunction.KLV:
+
+                def grad_func(params: Float[Array, " p"]):
+                    return gradient_all_params_klv(
+                        means_ref,
+                        wgts_ref,
+                        means_mov,
+                        wgts_mov,
+                        basis,
+                        var_ref,
+                        var_mov,
+                        n_dim,
+                        params,
+                    )
+
+            elif metric == DistanceFunction.L2:
+
+                def grad_func(params: Float[Array, " p"]):
+                    return gradient_all_params_l2(
+                        means_ref,
+                        wgts_ref,
+                        means_mov,
+                        wgts_mov,
+                        basis,
+                        var_ref,
+                        var_mov,
+                        n_dim,
+                        params,
+                    )
+
+            else:
+                raise ValueError("invalid distance function metric")
+        elif method == AlignmentMethod.RIGID:
+            from .grad.rigid import (
+                gradient_all_2d_klv,
+                gradient_all_2d_l2,
+                gradient_all_3d_klv,
+                gradient_all_3d_l2,
+            )
+
+            if metric == DistanceFunction.KLV:
+                if n_dim == 2:
+
+                    def grad_func(params: Float[Array, " 4"]):
+                        scale = params[0]
+                        alpha = params[1]
+                        trans = params[2:4]
+                        s_g, a_g, t_g = gradient_all_2d_klv(
+                            means_ref,
+                            wgts_ref,
+                            means_mov,
+                            wgts_mov,
+                            var_ref,
+                            var_mov,
+                            n_dim,
+                            scale,
+                            alpha,
+                            trans,
+                        )
+                        return jnp.concatenate([s_g, a_g, t_g], axis=0)
+
+                elif n_dim == 3:
+
+                    def grad_func(params: Float[Array, " 7"]):
+                        scale = params[0]
+                        alpha, beta, gamma = params[1], params[2], params[3]
+                        trans = params[4:7]
+                        s_g, a_g, b_g, g_g, t_g = gradient_all_3d_klv(
+                            means_ref,
+                            wgts_ref,
+                            means_mov,
+                            wgts_mov,
+                            var_ref,
+                            var_mov,
+                            n_dim,
+                            scale,
+                            alpha,
+                            beta,
+                            gamma,
+                            trans,
+                        )
+                        return jnp.concatenate(
+                            [s_g[None], a_g[None], b_g[None], g_g[None], t_g],
+                            axis=0,
+                        )
+
+                else:
+                    raise ValueError("only available for 2d, 3d points")
+            elif metric == DistanceFunction.L2:
+                if n_dim == 2:
+
+                    def grad_func(params: Float[Array, " 4"]):
+                        scale = params[0]
+                        alpha = params[1]
+                        trans = params[2:4]
+                        return jnp.concatenate(
+                            gradient_all_2d_l2(
+                                means_ref,
+                                wgts_ref,
+                                means_mov,
+                                wgts_mov,
+                                var_ref,
+                                var_mov,
+                                n_dim,
+                                scale,
+                                alpha,
+                                trans,
+                            )
+                        )
+
+                elif n_dim == 3:
+
+                    def grad_func(params: Float[Array, " 7"]):
+                        scale = params[0]
+                        alpha, beta, gamma = params[1], params[2], params[3]
+                        trans = params[4:7]
+                        return jnp.concatenate(
+                            gradient_all_3d_l2(
+                                means_ref,
+                                wgts_ref,
+                                means_mov,
+                                wgts_mov,
+                                var_ref,
+                                var_mov,
+                                n_dim,
+                                scale,
+                                alpha,
+                                beta,
+                                gamma,
+                                trans,
+                            )
+                        )
+
+                else:
+                    raise ValueError("only available for 2d, 3d points")
+            else:
+                raise ValueError("no analytical gradients for this")
+
     loss_func = _make_loss_function_spherical(
         means_ref,
         wgts_ref,
@@ -581,13 +750,6 @@ def spherical(
         l2_scaling,
         grbf_bandwidth,
     )
-
-    if validation_callback is None:
-
-        def validation_callback(
-            pars: Float[Array, " p"],
-        ) -> tuple[Float[Array, ""], Float[Array, ""]]:
-            return jnp.array(jnp.nan), jnp.array(jnp.nan)
 
     def loss_func_noaux(pars: Float[Array, " p"]) -> Float[Array, ""]:
         loss_val, _ = loss_func(pars)
@@ -635,9 +797,13 @@ def spherical(
 
     def take_step(x: OptimizationState) -> OptimizationState:
         params, opt_state, _, _, iter_num = x
-        (loss, aux_data), grads = jax.value_and_grad(loss_func, has_aux=True)(
-            params
-        )
+        if analytical_gradients:
+            loss, aux_data = loss_func(params)
+            grads = grad_func(params)
+        else:
+            (loss, aux_data), grads = jax.value_and_grad(
+                loss_func, has_aux=True
+            )(params)
         valid_dist, valid_reg = validation_callback(params)
         io_callback(
             save_step_data, None, aux_data, valid_dist, valid_reg, iter_num
@@ -713,7 +879,7 @@ def make_validation_function_corr_tps(
     ref_vol: Float[Array, "z y x"] | Float[Array, "y x"],
     ref_grid_pts: Float[Array, "z y x d"] | Float[Array, "y x d"],
     mov_vol: Float[Array, "z y x"] | Float[Array, "y x"],
-    blur_fun: Callable[[Array], Array] | None = None,
+    blur_fun: Callable[[Array], Array] = lambda x: x,
     interpolation_order: int = 0,
 ) -> tuple[
     ValidationCallback, Callable[[Float[Array, " p"]], Float[Array, " z y x"]]
@@ -755,12 +921,7 @@ def make_validation_function_corr_tps(
         )
 
     # Get output shape from reference volume
-    out_shape = ref_vol.shape
-
-    if blur_fun is None:
-
-        def blur_fun(x: Array) -> Array:
-            return x
+    out_shape = (ref_vol.shape[0], ref_vol.shape[1], ref_vol.shape[2])
 
     # Create basis matrix for transforming means_mov
     basis, _ = tps.make_basis_kernel(means_mov, control_points)
@@ -787,7 +948,7 @@ def make_validation_function_corr_tps(
 
     def validation_function(
         p: Float[Array, " p"],
-    ) -> tuple[Float[Array, ""], AuxiliaryData]:
+    ) -> tuple[Float[Array, ""], Float[Array, ""]]:
         """Validation function that warps volumes and computes correlation."""
         warped_mov_vol = warp_function(p)
         ncc = normalized_cross_correlation(ref_vol, warped_mov_vol)
@@ -806,7 +967,7 @@ def make_validation_function_corr_rigid(
     ref_vol: Float[Array, "z y x"] | Float[Array, "y x"],
     ref_grid_pts: Float[Array, "z y x d"] | Float[Array, "y x d"],
     mov_vol: Float[Array, "z y x"] | Float[Array, "y x"],
-    blur_fun: Callable[[Array], Array] | None = None,
+    blur_fun: Callable[[Array], Array] = lambda x: x,
     interpolation_order: int = 0,
 ) -> tuple[
     ValidationCallback, Callable[[Float[Array, " p"]], Float[Array, " z y x"]]
@@ -845,12 +1006,7 @@ def make_validation_function_corr_rigid(
         )
 
     # Get output shape from reference volume
-    out_shape = ref_vol.shape
-
-    if blur_fun is None:
-
-        def blur_fun(x: Array) -> Array:
-            return x
+    out_shape = (ref_vol.shape[0], ref_vol.shape[1], ref_vol.shape[2])
 
     def warp_function(p: Float[Array, " p"]) -> Float[Array, " z y x"]:
         """Warp moving volume using rigid transform parameters."""

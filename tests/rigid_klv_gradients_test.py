@@ -74,7 +74,7 @@ def test_rigid_gradients_2d():
 
     # Compute gradients analytically
     grad_s_analytical, grad_alpha_analytical, grad_t_analytical = (
-        grad_rigid.gradient_all_2d(
+        grad_rigid.gradient_all_2d_klv(
             means_p,
             wgts_p,
             means_q,
@@ -153,7 +153,7 @@ def test_rigid_gradients_3d():
         grad_beta_analytical,
         grad_gamma_analytical,
         grad_t_analytical,
-    ) = grad_rigid.gradient_all_3d(
+    ) = grad_rigid.gradient_all_3d_klv(
         means_p,
         wgts_p,
         means_q,

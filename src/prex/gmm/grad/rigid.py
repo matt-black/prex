@@ -116,7 +116,7 @@ def gradient_rotation_matrix(
     wgts_p: Float[Array, " n"],
     means_q: Float[Array, "m d"],
     means_q_trans: Float[Array, "m d"],
-    scale: float,
+    scale: Float[Array, ""],
     var_p: float,
     var_q: float,
     n_dim: int,
@@ -251,8 +251,15 @@ def gradient_rotation_angles_3d(
     return grad_alpha, grad_beta, grad_gamma
 
 
-@Partial(jax.jit, static_argnums=(6,))
-def gradient_all_2d(
+@Partial(
+    jax.jit,
+    static_argnums=(
+        4,
+        5,
+        6,
+    ),
+)
+def gradient_all_2d_klv(
     means_p: Float[Array, "n 2"],
     wgts_p: Float[Array, " n"],
     means_q: Float[Array, "m 2"],
@@ -330,7 +337,7 @@ def gradient_all_2d(
 
 
 @Partial(jax.jit, static_argnums=(6,))
-def gradient_all_3d(
+def gradient_all_3d_klv(
     means_p: Float[Array, "n 3"],
     wgts_p: Float[Array, " n"],
     means_q: Float[Array, "m 3"],
@@ -543,7 +550,7 @@ def gradient_rotation_matrix_l2(
     means_q: Float[Array, "m d"],
     wgts_q: Float[Array, " m"],
     means_q_trans: Float[Array, "m d"],
-    scale: float,
+    scale: Float[Array, ""],
     var_p: float,
     var_q: float,
     n_dim: int,

@@ -303,9 +303,10 @@ def resample_volume(
 
     # Interpolate inverse displacement vectors at output grid points
     inv_displacements = gaussian_rbf_interpolate(
-        query_points=out_grid_physical,
-        control_points=inv_pts,
-        control_values=inv_vecs,
+        query_pts=out_grid_physical,
+        ctrl_pts=inv_pts,
+        ctrl_vals=inv_vecs,
+        scan=False,
     )  # shape (-1, 3)
 
     # Apply inverse displacement to get coordinates in moving volume space (physical units)

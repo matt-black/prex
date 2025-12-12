@@ -268,9 +268,14 @@ def normalized_cross_correlation(
     return ncc
 
 
-@Partial(jax.jit, static_argnums=(3, 4))
+@Partial(jax.jit, static_argnums=(3, 4, 5))
 def gaussian_rbf_interpolate(
-    query_points, control_points, control_values, bandwidth=None, k_neighbors=50
+    query_pts: Float[Array, "m d"],
+    ctrl_pts: Float[Array, "n d"],
+    ctrl_vals: Float[Array, "n d"],
+    bandwidth: float | None = None,
+    k_neighbors: int = 50,
+    scan: bool = False,
 ):
     """Do sparse gaussian RBF interpolation using k-nearest neighbors.
 
@@ -279,9 +284,9 @@ def gaussian_rbf_interpolate(
     large point sets (1000-10000 points).
 
     Args:
-        query_points: (M, d) array of points where you want to interpolate
-        control_points: (N, d) array of control point locations (your q points)
-        control_values: (N, d) array of values at control points (your w vectors)
+        query_pts: (M, d) array of points where you want to interpolate
+        ctrl_pts: (N, d) array of control point locations (your q points)
+        ctrl_vals: (N, d) array of values at control points (your w vectors)
         bandwidth: Gaussian bandwidth σ (if None, auto-computed as median distance)
         k_neighbors: number of nearest neighbors to use for local interpolation (default: 50)
 
@@ -292,38 +297,38 @@ def gaussian_rbf_interpolate(
     # Auto-compute bandwidth if not provided
     if bandwidth is None:
         # Use median pairwise distance heuristic
-        sample_size = min(1000, control_points.shape[0])
+        sample_size = min(1000, ctrl_pts.shape[0])
         indices = jax.random.permutation(
-            jax.random.PRNGKey(0), control_points.shape[0]
+            jax.random.PRNGKey(0), ctrl_pts.shape[0]
         )[:sample_size]
-        sample_points = control_points[indices]
+        sample_points = ctrl_pts[indices]
         dists = jnp.linalg.norm(
             sample_points[:, None, :] - sample_points[None, :, :], axis=-1
         )
-        bandwidth = jnp.median(dists)
+        bandwidth = jnp.median(dists)  # pyright: ignore[reportAssignmentType]
 
     # Build KD tree for control points
-    tree = build_tree(control_points, optimize=True)
+    tree = build_tree(ctrl_pts, optimize=True)
 
     # Find k nearest neighbors for each query point
-    k = min(k_neighbors, control_points.shape[0])
-    neighbor_indices, neighbor_distances = query_neighbors(
-        tree, query_points, k=k
-    )
+    k = min(k_neighbors, ctrl_pts.shape[0])
+    neighbor_inds, _ = query_neighbors(tree, query_pts, k=k)
 
     # Perform local RBF interpolation for each query point
-    def interpolate_single_point(query_idx):
+    def interpolate_single_point(query_idx: Int) -> Float[Array, " d"]:
         # Get k nearest control points and their values
-        nn_indices = neighbor_indices[query_idx]  # (k,)
-        nn_points = control_points[nn_indices]  # (k, d)
-        nn_values = control_values[nn_indices]  # (k, d)
+        nn_indices = neighbor_inds[query_idx]  # (k,)
+        nn_points = ctrl_pts[nn_indices]  # (k, d)
+        nn_values = ctrl_vals[nn_indices]  # (k, d)
 
         # Compute RBF matrix for local neighborhood (k x k)
         # Using Gaussian RBF: φ(r) = exp(-r²/(2σ²))
         dist_matrix = jnp.linalg.norm(
             nn_points[:, None, :] - nn_points[None, :, :], axis=-1
         )
-        phi_matrix = jnp.exp(-(dist_matrix**2) / (2 * bandwidth**2))
+        phi_matrix = jnp.exp(
+            -(dist_matrix**2) / (2 * bandwidth**2)
+        )  # pyright: ignore[reportOptionalOperand]
 
         # Solve for local weights (k x d)
         # Add regularization for numerical stability
@@ -332,14 +337,26 @@ def gaussian_rbf_interpolate(
         )
 
         # Evaluate at query point
-        query_point = query_points[query_idx]
+        query_point = query_pts[query_idx]
         query_dist = jnp.linalg.norm(
             nn_points - query_point[None, :], axis=-1
         )  # (k,)
-        query_phi = jnp.exp(-(query_dist**2) / (2 * bandwidth**2))  # (k,)
+        query_phi = jnp.exp(
+            -(query_dist**2) / (2 * bandwidth**2)
+        )  # pyright: ignore[reportOptionalOperand] # (k,)
 
         # Interpolated value (d,)
         return query_phi @ local_weights
 
     # Vectorize over all query points
-    return jax.vmap(interpolate_single_point)(jnp.arange(query_points.shape[0]))
+    if scan:
+
+        def interp(_: None, query_idx: Int) -> tuple[None, Float[Array, " d"]]:
+            return None, interpolate_single_point(query_idx)
+
+        _, vecs = jax.lax.scan(interp, None, jnp.arange(query_pts.shape[0]))
+        return vecs
+    else:
+        return jax.vmap(interpolate_single_point, 0, 0)(
+            jnp.arange(query_pts.shape[0])
+        )
