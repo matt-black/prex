@@ -54,7 +54,7 @@ def expectation_weighted(
         y (Float[Array, "m d"]): source (moving) point set
         var (Float[Array, ""]): variance of the Gaussian kernel
         w (float): outlier probability
-        alpha_m (Float[Array, " m"]): per-point weightings for the source points
+        alpha_m (Float[Array, " m"]): per-point weightings for the source points (arbitrary positive values)
 
     Returns:
         MatchingMatrix: (m x n) matrix of matching probabilities.
@@ -62,9 +62,11 @@ def expectation_weighted(
     n, d = x.shape
     m, _ = y_t.shape
     d_t = sqdist(x, y_t).transpose()  # (m, n)
-    top = alpha_m * jnp.exp(jnp.negative(jnp.divide(d_t, 2 * var)))
+    top = alpha_m[:, None] * jnp.exp(jnp.negative(jnp.divide(d_t, 2 * var)))
+    # Use sum of weights instead of m to support arbitrary scaled weights
+    alpha_sum = jnp.sum(alpha_m)
     outl_term = jnp.divide(w, 1.0 - w) * jnp.divide(
-        jnp.float_power(2 * jnp.pi * var, d / 2) * m, n
+        jnp.float_power(2 * jnp.pi * var, d / 2) * alpha_sum, n
     )
     bot = jnp.add(
         jnp.clip(jnp.sum(top, axis=0, keepdims=True), jnp.finfo(x.dtype).eps),

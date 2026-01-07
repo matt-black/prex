@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float
 
 from ..util import sqdist
-from ._matching import MatchingMatrix, expectation
+from ._matching import MatchingMatrix, expectation, expectation_weighted
 
 __all__ = [
     "RotationMatrix",
@@ -31,6 +31,7 @@ def align(
     outlier_prob: float,
     max_iter: int,
     tolerance: float,
+    source_weights: Float[Array, " m"] | None = None,
 ) -> tuple[
     tuple[MatchingMatrix, RotationMatrix, ScalingTerm, Translation],
     tuple[Float[Array, ""], int],
@@ -43,6 +44,7 @@ def align(
         outlier_prob (float): outlier probability, should be in range [0,1].
         max_iter (int): maximum # of iterations to optimize for.
         tolerance (float): tolerance for matching variance, below which the algorithm will terminate.
+        source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
 
     Returns:
         tuple[TransformParams, tuple[Float[Array, ""], int]]: the fitted transform parameters (a rotation matrix, scaling term, and translation) along with the final variance and the number of iterations that the algorithm was run for.
@@ -71,7 +73,12 @@ def align(
     ]:
         (R, s, t, P), (var, iter_num) = a
         mov_t = transform(mov, R, s, t)
-        P = expectation(ref, mov_t, var, outlier_prob)
+        if source_weights is None:
+            P = expectation(ref, mov_t, var, outlier_prob)
+        else:
+            P = expectation_weighted(
+                ref, mov_t, var, outlier_prob, source_weights
+            )
         (R, s, t), new_var = maximization(ref, mov, P, tolerance)
         return (R, s, t, P), (new_var, iter_num + 1)
 
@@ -96,6 +103,7 @@ def align_fixed_iter(
     mov: Float[Array, "m d"],
     outlier_prob: float,
     num_iter: int,
+    source_weights: Float[Array, " m"] | None = None,
 ) -> tuple[
     tuple[MatchingMatrix, RotationMatrix, ScalingTerm, Translation],
     Float[Array, " {num_iter}"],
@@ -107,6 +115,7 @@ def align_fixed_iter(
         mov (Float[Array, "m d"]): moving points
         outlier_prob (float): outlier probability, should be in range [0,1].
         num_iter (int): # of iterations to optimize for.
+        source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
 
     Returns:
         tuple[TransformParams, Float[Array, " {num_iter}"]]: the fitted transform parameters (a rotation matrix, scaling term, and translation) along with the variance at each step of the optimization.
@@ -131,7 +140,12 @@ def align_fixed_iter(
     ]:
         (R, s, t, P), var = a
         mov_t = transform(mov, R, s, t)
-        p = expectation(ref, mov_t, var, outlier_prob)
+        if source_weights is None:
+            p = expectation(ref, mov_t, var, outlier_prob)
+        else:
+            p = expectation_weighted(
+                ref, mov_t, var, outlier_prob, source_weights
+            )
         (R, s, t), new_var = maximization(ref, mov, p, 0.0)
         return ((R, s, t, P), new_var), new_var
 
