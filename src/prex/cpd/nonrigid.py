@@ -138,7 +138,7 @@ def align_fixed_iter(
                 ref, mov_t, var, outlier_prob, source_weights
             )
         W, new_var = maximization(
-            ref, mov, P, G, var, regularization_param, 0.0
+            ref, mov, P, G, var, regularization_param, 1e-6
         )
         return ((P, W), new_var), new_var
 

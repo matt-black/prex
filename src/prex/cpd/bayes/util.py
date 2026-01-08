@@ -71,7 +71,7 @@ def initialize(
     alpha_m = jnp.ones((m,)) / m
     var = gamma * jnp.mean(d_t)
     G = jnp.clip(affinity_matrix(y, y, kernel, beta), jnp.finfo(x.dtype).eps)
-    sigma_m = jnp.ones_like(alpha_m)
+    sigma_m = jnp.full_like(alpha_m, 1e-4)
     return G, alpha_m, sigma_m, var
 
 
@@ -95,7 +95,7 @@ def transform(
     Notes:
         To apply the full BCPD transform, add the `VectorField` output to the points to transform before passing them into this function.
     """
-    return (R.T @ x.T).T * s + t
+    return s * (x @ R.T) + t
 
 
 def transform_inverse(
@@ -115,7 +115,7 @@ def transform_inverse(
     Returns:
         Float[Array, "n d"]: transformed points
     """
-    return transform(x - t[None, :], R, 1 / s, jnp.array(0.0))
+    return transform(x - t[None, :], R.T, 1 / s, jnp.array(0.0))
 
 
 def dimension_bounds(x: Float[Array, " n"]) -> Float[Array, " 2"]:

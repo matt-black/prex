@@ -146,7 +146,7 @@ def align_fixed_iter(
             p = expectation_weighted(
                 ref, mov_t, var, outlier_prob, source_weights
             )
-        (R, s, t), new_var = maximization(ref, mov, p, 0.0)
+        (R, s, t), new_var = maximization(ref, mov, p, 1e-6)
         return ((R, s, t, P), new_var), new_var
 
     ((R, s, t, P), _), varz = jax.lax.scan(

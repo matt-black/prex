@@ -76,6 +76,7 @@ def update_nonrigid(
     n_hat: Float[Array, ""],
     kappa: float,
     lambda_: float,
+    fixed_alpha: Float[Array, " m"] | None = None,
 ) -> tuple[
     Float[Array, "m d"],
     Float[Array, "m d"],
@@ -83,23 +84,48 @@ def update_nonrigid(
     Float[Array, " m"],
 ]:
     m, _ = y.shape
-    resid = apply_Tinv(x_hat, R, s, t) - y
-    # cov_i = lambda_ * jnp.linalg.inv(G) + jnp.square(s)/var * jnp.diag(nu)
-    cov_i = jnp.linalg.solve(
-        G,
-        jnp.eye(G.shape[0]) * lambda_
-        + (jnp.divide(jnp.square(s), var) * jnp.diag(nu) @ G),
-    )
-    # v_hat =  cov @ jnp.diag(nu * jnp.square(s) / var) @ resid
-    v_hat = jnp.linalg.solve(
-        jnp.divide(var, jnp.square(s)) * cov_i, jnp.diag(nu) @ resid
-    )
+    eps = jnp.finfo(y.dtype).eps
+
+    # Clip s to prevent division by zero during back-projection
+    s_safe = jnp.maximum(s, 1e-6)
+
+    # Back-project x_hat to source space: (x_hat - t) @ R / s
+    resid_projected = apply_Tinv(x_hat, R, s_safe, t) - y
+
+    # Stabilization: bcpd.c uses G1 = G + (lambda * var / s^2) * diag(1/nu)
+    # We solve: (G * diag(nu) + cc * I) W = resid_projected
+    # Then v = G * diag(nu) * W
+    cc = lambda_ * var / (jnp.square(s_safe) + eps)
+
+    # Symmetric formulation: (G + cc * diag(1/nu))
+    # To avoid 1/nu when nu is zero, we solve for W = (G + cc * diag(1/nu))^-1 resid
+    # This is equivalent to solving (diag(nu) @ G + cc * I) W = diag(nu) @ resid
+    # However, to maintain symmetry for JAX/LA solvers:
+    # Let K = G + cc * diag(1/nu).
+    # v = G @ K^-1 @ resid
+
+    G_reg = G + cc * jnp.diag(1.0 / (nu + eps))
+    W = jnp.linalg.solve(G_reg, resid_projected)
+
+    v_hat = G @ W
     u_hat = y + v_hat
-    if math.isinf(kappa):
-        alpha_m = nu / n_hat
+
+    # Update alpha_m: use fixed values if provided, otherwise compute
+    if fixed_alpha is not None:
+        alpha_m = fixed_alpha
+    elif math.isinf(kappa):
+        alpha_m = nu / (n_hat + eps)
     else:
         alpha_m = jnp.exp(digamma(kappa + nu) - digamma(kappa * m + n_hat))
-    sigma_m = jnp.linalg.solve(cov_i, jnp.ones((m, 1)))[:, 0]
+
+    # sigma_m: diagonal of posterior covariance
+    # Ref: bcpd.c:333 -> sgm[m] = G2[m,m] * SQ(*r/(*s))/w[m];
+    # where G2 = inv(G + cc*diag(1/nu)) @ G and SQ(r/s) = cc/lambda
+    G_inv_G = jnp.linalg.solve(G_reg, G)
+    sigma_m = jnp.maximum(
+        jnp.diagonal(G_inv_G) * (cc / lambda_) / (nu + eps), 0.0
+    )
+
     return v_hat, u_hat, sigma_m, alpha_m
 
 
@@ -110,6 +136,7 @@ def update_rigid(
     sigma_m: Float[Array, " m"],
     nu: Float[Array, " m"],
     n_hat: Float[Array, ""],
+    debias: bool = False,
 ) -> tuple[RotationMatrix, ScalingTerm, Translation, Float[Array, ""]]:
     _, d = y.shape
     x_bar = jnp.divide(jnp.sum(nu[:, None] * x_hat, axis=0), n_hat)
@@ -136,8 +163,11 @@ def update_rigid(
             axis=0,
         )
         / n_hat
-        + jnp.eye(d) * var_bar
     )
+
+    if debias:
+        S_uu += jnp.eye(d) * var_bar
+
     big_phi, _, big_psiT = jnp.linalg.svd(S_xu)
     mid = jnp.diag(
         jnp.concatenate(
@@ -173,4 +203,4 @@ def update_variance(
         )
         + jnp.square(s) * var_bar
     )
-    return var
+    return jax.lax.select(var > 1e-6, var, 1e-6)
