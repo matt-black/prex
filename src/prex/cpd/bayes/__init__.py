@@ -170,9 +170,9 @@ def align(
             s,
             t,
             v,
-            mu_y,
-            sigma_y,
-            mu_x,
+            mu_y,  # pyright: ignore[reportArgumentType]
+            sigma_y,  # pyright: ignore[reportArgumentType]
+            mu_x,  # pyright: ignore[reportArgumentType]
             sigma_x,  # pyright: ignore[reportArgumentType]
         )
 
@@ -300,9 +300,9 @@ def align_with_ic(
             s,
             t,
             v,
-            mu_y,
-            sigma_y,
-            mu_x,
+            mu_y,  # pyright: ignore[reportPossiblyUnboundVariable]
+            sigma_y,  # pyright: ignore[reportPossiblyUnboundVariable]
+            mu_x,  # pyright: ignore[reportPossiblyUnboundVariable]
             sigma_x,  # pyright: ignore[reportPossiblyUnboundVariable]
         )
 

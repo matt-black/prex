@@ -3,7 +3,12 @@ import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float
 
 from ..util import sqdist
-from ._matching import MatchingMatrix, expectation, expectation_weighted
+from ._matching import (
+    MatchingMatrix,
+    expectation,
+    expectation_masked,
+    expectation_weighted,
+)
 
 __all__ = [
     "KernelMatrix",
@@ -31,6 +36,7 @@ def align(
     max_iter: int,
     tolerance: float,
     source_weights: Float[Array, " m"] | None = None,
+    mask: Float[Array, "m n"] | None = None,
 ) -> tuple[TransformParams, tuple[Float[Array, ""], int]]:
     """Align the moving points onto the reference points by a nonrigid transform.
 
@@ -43,9 +49,10 @@ def align(
         max_iter (int): maximum # of iterations to optimize for.
         tolerance (float): tolerance for matching variance, below which the algorithm will terminate.
         source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
+        mask (Float[Array, "m n"] | None): optional mask matrix where nonzero entries indicate valid matches.
 
     Returns:
-        tuple[TransformParams, Float[Array, " {num_iter}"]]: the fitted transform parameters (the matching matrix and the kernel and coefficient matrices) along with the final variance and the number of iterations that the algorithm was run for.
+        tuple[TransformParams, tuple[Float[Array, ""], int]]: the fitted transform parameters (the matching matrix and the kernel and coefficient matrices) along with the final variance and the number of iterations that the algorithm was run for.
     """
     # initialize variance
     n, d = ref.shape
@@ -76,7 +83,10 @@ def align(
         (W, _), (var, iter_num) = a
         mov_t = transform(mov, G, W)
         if source_weights is None:
-            P = expectation(ref, mov_t, var, outlier_prob)
+            if mask is None:
+                P = expectation(ref, mov_t, var, outlier_prob)
+            else:
+                P = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
             P = expectation_weighted(
                 ref, mov_t, var, outlier_prob, source_weights
@@ -102,6 +112,7 @@ def align_fixed_iter(
     kernel_stddev: float,
     num_iter: int,
     source_weights: Float[Array, " m"] | None = None,
+    mask: Float[Array, "m n"] | None = None,
 ) -> tuple[TransformParams, Float[Array, " {num_iter}"]]:
     """Align the moving points onto the reference points by a nonrigid transform.
 
@@ -113,6 +124,7 @@ def align_fixed_iter(
         kernel_stddev (float): standard deviation of Gaussian kernel function.
         num_iter (int): # of iterations to optimize for.
         source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
+        mask (Float[Array, "m n"] | None): optional mask matrix where nonzero entries indicate valid matches.
 
     Returns:
         tuple[TransformParams, Float[Array, " {num_iter}"]]: the fitted transform parameters (the matching matrix and the kernel and coefficient matrices) along with the variance at each step of the optimization.
@@ -132,7 +144,10 @@ def align_fixed_iter(
         (_, W), var = a
         mov_t = transform(mov, G, W)
         if source_weights is None:
-            P = expectation(ref, mov_t, var, outlier_prob)
+            if mask is None:
+                P = expectation(ref, mov_t, var, outlier_prob)
+            else:
+                P = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
             P = expectation_weighted(
                 ref, mov_t, var, outlier_prob, source_weights

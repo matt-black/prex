@@ -3,7 +3,12 @@ import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float
 
 from ..util import sqdist
-from ._matching import MatchingMatrix, expectation, expectation_weighted
+from ._matching import (
+    MatchingMatrix,
+    expectation,
+    expectation_masked,
+    expectation_weighted,
+)
 
 __all__ = [
     "AffineMatrix",
@@ -28,6 +33,7 @@ def align(
     max_iter: int,
     tolerance: float,
     source_weights: Float[Array, " m"] | None = None,
+    mask: Float[Array, "m n"] | None = None,
 ) -> tuple[TransformParams, tuple[Float[Array, ""], int]]:
     """Align the moving points onto the reference points by affine transform.
 
@@ -68,12 +74,15 @@ def align(
         (A, t, P), (var, iter_num) = a
         mov_t = transform(mov, A, t)
         if source_weights is None:
-            p = expectation(ref, mov_t, var, outlier_prob)
+            if mask is None:
+                P = expectation(ref, mov_t, var, outlier_prob)
+            else:
+                P = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
-            p = expectation_weighted(
+            P = expectation_weighted(
                 ref, mov_t, var, outlier_prob, source_weights
             )
-        (A, t), new_var = maximization(ref, mov, p, tolerance)
+        (A, t), new_var = maximization(ref, mov, P, tolerance)
         return (A, t, P), (new_var, iter_num + 1)
 
     (A, t, P), (var_f, num_iter) = jax.lax.while_loop(
@@ -91,6 +100,7 @@ def align_fixed_iter(
     outlier_prob: float,
     num_iter: int,
     source_weights: Float[Array, " m"] | None = None,
+    mask: Float[Array, "m n"] | None = None,
 ) -> tuple[TransformParams, Float[Array, " {num_iter}"]]:
     """Align the moving points onto the reference points by affine transform.
 
@@ -119,7 +129,10 @@ def align_fixed_iter(
         (A, t, P), var = a
         mov_t = transform(mov, A, t)
         if source_weights is None:
-            P = expectation(ref, mov_t, var, outlier_prob)
+            if mask is None:
+                P = expectation(ref, mov_t, var, outlier_prob)
+            else:
+                P = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
             P = expectation_weighted(
                 ref, mov_t, var, outlier_prob, source_weights
