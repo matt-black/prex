@@ -35,7 +35,7 @@ def align(
     kernel_stddev: float,
     max_iter: int,
     tolerance: float,
-    source_weights: Float[Array, " m"] | None = None,
+    moving_weights: Float[Array, " m"] | None = None,
     mask: Float[Array, "m n"] | None = None,
 ) -> tuple[TransformParams, tuple[Float[Array, ""], int]]:
     """Align the moving points onto the reference points by a nonrigid transform.
@@ -48,7 +48,7 @@ def align(
         kernel_stddev (float): standard deviation of Gaussian kernel function.
         max_iter (int): maximum # of iterations to optimize for.
         tolerance (float): tolerance for matching variance, below which the algorithm will terminate.
-        source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
+        moving_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
         mask (Float[Array, "m n"] | None): optional mask matrix where nonzero entries indicate valid matches.
 
     Returns:
@@ -82,14 +82,14 @@ def align(
     ]:
         (W, _), (var, iter_num) = a
         mov_t = transform(mov, G, W)
-        if source_weights is None:
+        if moving_weights is None:
             if mask is None:
                 P = expectation(ref, mov_t, var, outlier_prob)
             else:
                 P = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
             P = expectation_weighted(
-                ref, mov_t, var, outlier_prob, source_weights
+                ref, mov_t, var, outlier_prob, moving_weights
             )
         W, new_var = maximization(
             ref, mov, P, G, var, regularization_param, tolerance
@@ -101,7 +101,7 @@ def align(
         body_fund,
         ((jnp.zeros_like(mov), jnp.zeros((m, n))), (var_i, 0)),
     )
-    return (P, W, G), (var_f, num_iter)
+    return (P, G, W), (var_f, num_iter)
 
 
 def align_fixed_iter(
@@ -111,7 +111,7 @@ def align_fixed_iter(
     regularization_param: float,
     kernel_stddev: float,
     num_iter: int,
-    source_weights: Float[Array, " m"] | None = None,
+    moving_weights: Float[Array, " m"] | None = None,
     mask: Float[Array, "m n"] | None = None,
 ) -> tuple[TransformParams, Float[Array, " {num_iter}"]]:
     """Align the moving points onto the reference points by a nonrigid transform.
@@ -123,7 +123,7 @@ def align_fixed_iter(
         regularization_param (float): regularization parameter (usually termed "lambda" in the literature) for motion coherence.
         kernel_stddev (float): standard deviation of Gaussian kernel function.
         num_iter (int): # of iterations to optimize for.
-        source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
+        moving_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
         mask (Float[Array, "m n"] | None): optional mask matrix where nonzero entries indicate valid matches.
 
     Returns:
@@ -143,14 +143,14 @@ def align_fixed_iter(
     ):
         (_, W), var = a
         mov_t = transform(mov, G, W)
-        if source_weights is None:
+        if moving_weights is None:
             if mask is None:
                 P = expectation(ref, mov_t, var, outlier_prob)
             else:
                 P = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
             P = expectation_weighted(
-                ref, mov_t, var, outlier_prob, source_weights
+                ref, mov_t, var, outlier_prob, moving_weights
             )
         W, new_var = maximization(
             ref, mov, P, G, var, regularization_param, 1e-6
@@ -163,7 +163,7 @@ def align_fixed_iter(
         length=num_iter,
     )
 
-    return (P, W, G), varz
+    return (P, G, W), varz
 
 
 def maximization(

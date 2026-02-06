@@ -45,7 +45,7 @@ def test_weighted_affine_zero_weight():
     # Run with near-zero weight on the outlier
     weights = jnp.array([1.0, 1.0, 1.0, 1e-10])
     (P, A, t), var = affine.align_fixed_iter(
-        ref, mov, outlier_prob=0.1, num_iter=10, source_weights=weights
+        ref, mov, outlier_prob=0.1, num_iter=10, moving_weights=weights
     )
 
     # The last point should have very low matching probabilities
@@ -67,7 +67,7 @@ def test_weighted_nonrigid_nonuniform_weights():
         regularization_param=1.0,
         kernel_stddev=1.0,
         num_iter=3,
-        source_weights=weights1,
+        moving_weights=weights1,
     )
 
     # Test with non-uniform weights
@@ -79,7 +79,7 @@ def test_weighted_nonrigid_nonuniform_weights():
         regularization_param=1.0,
         kernel_stddev=1.0,
         num_iter=3,
-        source_weights=weights2,
+        moving_weights=weights2,
     )
 
     # Results should be different
@@ -95,7 +95,7 @@ def test_weighted_rigid_with_weights():
     # Test with weights
     weights = jnp.array([1.0, 1.0, 0.5])
     (P, R, s, t), var = rigid.align_fixed_iter(
-        ref, mov, outlier_prob=0.1, num_iter=5, source_weights=weights
+        ref, mov, outlier_prob=0.1, num_iter=5, moving_weights=weights
     )
 
     # Should complete without errors and produce reasonable results

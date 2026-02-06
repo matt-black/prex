@@ -43,6 +43,7 @@ def align(
     tolerance: float | None,
     regularization_param_nonrigid: float = 1.0,
     kernel_stddev_nonrigid: float = 1.0,
+    moving_weights: Float[Array, " m"] | None = None,
     mask: Float[Array, "m n"] | None = None,
 ) -> tuple[
     TransformParams,
@@ -73,6 +74,7 @@ def align(
                 regularization_param_nonrigid,
                 kernel_stddev_nonrigid,
                 num_iter,
+                moving_weights=moving_weights,
                 mask=mask,
             )
         else:
@@ -84,25 +86,48 @@ def align(
                 kernel_stddev_nonrigid,
                 num_iter,
                 tolerance,
+                moving_weights=moving_weights,
                 mask=mask,
             )
     elif method == "affine":
         if tolerance is None:
             return align_fixed_iter_affine(
-                ref, mov, outlier_prob, num_iter, mask=mask
+                ref,
+                mov,
+                outlier_prob,
+                num_iter,
+                moving_weights=moving_weights,
+                mask=mask,
             )
         else:
             return align_affine(
-                ref, mov, outlier_prob, num_iter, tolerance, mask=mask
+                ref,
+                mov,
+                outlier_prob,
+                num_iter,
+                tolerance,
+                moving_weights=moving_weights,
+                mask=mask,
             )
     elif method == "rigid":
         if tolerance is None:
             return align_fixed_iter_rigid(
-                ref, mov, outlier_prob, num_iter, mask=mask
+                ref,
+                mov,
+                outlier_prob,
+                num_iter,
+                moving_weights=moving_weights,
+                mask=mask,
             )
         else:
             return align_rigid(
-                ref, mov, outlier_prob, num_iter, tolerance, mask=mask
+                ref,
+                mov,
+                outlier_prob,
+                num_iter,
+                tolerance,
+                moving_weights=moving_weights,
+                mask=mask,
             )
     else:
         raise ValueError("invalid method")

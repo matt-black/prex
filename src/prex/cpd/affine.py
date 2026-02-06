@@ -32,7 +32,7 @@ def align(
     outlier_prob: float,
     max_iter: int,
     tolerance: float,
-    source_weights: Float[Array, " m"] | None = None,
+    moving_weights: Float[Array, " m"] | None = None,
     mask: Float[Array, "m n"] | None = None,
 ) -> tuple[TransformParams, tuple[Float[Array, ""], int]]:
     """Align the moving points onto the reference points by affine transform.
@@ -43,7 +43,7 @@ def align(
         outlier_prob (float): outlier probability, should be in range [0,1].
         max_iter (int): maximum # of iterations to optimize for.
         tolerance (float): tolerance for matching variance, below which the algorithm will terminate.
-        source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
+        moving_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
 
     Returns:
         tuple[TransformParams, tuple[Float[Array, ""], int]]: the fitted transform parameters (the matching matrix, affine matrix, and translation) along with the final variance and the number of iterations that the algorithm was run for.
@@ -73,14 +73,14 @@ def align(
     ]:
         (A, t, P), (var, iter_num) = a
         mov_t = transform(mov, A, t)
-        if source_weights is None:
+        if moving_weights is None:
             if mask is None:
                 P = expectation(ref, mov_t, var, outlier_prob)
             else:
                 P = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
             P = expectation_weighted(
-                ref, mov_t, var, outlier_prob, source_weights
+                ref, mov_t, var, outlier_prob, moving_weights
             )
         (A, t), new_var = maximization(ref, mov, P, tolerance)
         return (A, t, P), (new_var, iter_num + 1)
@@ -99,7 +99,7 @@ def align_fixed_iter(
     mov: Float[Array, "m d"],
     outlier_prob: float,
     num_iter: int,
-    source_weights: Float[Array, " m"] | None = None,
+    moving_weights: Float[Array, " m"] | None = None,
     mask: Float[Array, "m n"] | None = None,
 ) -> tuple[TransformParams, Float[Array, " {num_iter}"]]:
     """Align the moving points onto the reference points by affine transform.
@@ -109,7 +109,7 @@ def align_fixed_iter(
         mov (Float[Array, "m d"]): moving points
         outlier_prob (float): outlier probability, should be in range [0,1].
         num_iter (int): # of iterations to optimize for.
-        source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
+        moving_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
 
     Returns:
         tuple[TransformParams, Float[Array, " {num_iter}"]]: the fitted transform parameters (the matching matrix, affine matrix, and translation) along with the variance at each step of the optimization.
@@ -128,14 +128,14 @@ def align_fixed_iter(
     ):
         (A, t, P), var = a
         mov_t = transform(mov, A, t)
-        if source_weights is None:
+        if moving_weights is None:
             if mask is None:
                 P = expectation(ref, mov_t, var, outlier_prob)
             else:
                 P = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
             P = expectation_weighted(
-                ref, mov_t, var, outlier_prob, source_weights
+                ref, mov_t, var, outlier_prob, moving_weights
             )
         (A, t), new_var = maximization(ref, mov, P, 1e-6)
         return ((A, t, P), new_var), new_var

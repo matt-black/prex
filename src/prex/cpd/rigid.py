@@ -36,7 +36,7 @@ def align(
     outlier_prob: float,
     max_iter: int,
     tolerance: float,
-    source_weights: Float[Array, " m"] | None = None,
+    moving_weights: Float[Array, " m"] | None = None,
     mask: Float[Array, "m n"] | None = None,
 ) -> tuple[
     tuple[MatchingMatrix, RotationMatrix, ScalingTerm, Translation],
@@ -50,7 +50,7 @@ def align(
         outlier_prob (float): outlier probability, should be in range [0,1].
         max_iter (int): maximum # of iterations to optimize for.
         tolerance (float): tolerance for matching variance, below which the algorithm will terminate.
-        source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
+        moving_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
         mask (Float[Array, "m n"] | None): optional mask matrix where nonzero entries indicate valid matches.
 
     Returns:
@@ -80,14 +80,14 @@ def align(
     ]:
         (R, s, t, P), (var, iter_num) = a
         mov_t = transform(mov, R, s, t)
-        if source_weights is None:
+        if moving_weights is None:
             if mask is None:
                 P = expectation(ref, mov_t, var, outlier_prob)
             else:
                 P = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
             P = expectation_weighted(
-                ref, mov_t, var, outlier_prob, source_weights
+                ref, mov_t, var, outlier_prob, moving_weights
             )
         (R, s, t), new_var = maximization(ref, mov, P, tolerance)
         return (R, s, t, P), (new_var, iter_num + 1)
@@ -113,7 +113,7 @@ def align_fixed_iter(
     mov: Float[Array, "m d"],
     outlier_prob: float,
     num_iter: int,
-    source_weights: Float[Array, " m"] | None = None,
+    moving_weights: Float[Array, " m"] | None = None,
     mask: Float[Array, "m n"] | None = None,
 ) -> tuple[
     tuple[MatchingMatrix, RotationMatrix, ScalingTerm, Translation],
@@ -126,7 +126,7 @@ def align_fixed_iter(
         mov (Float[Array, "m d"]): moving points
         outlier_prob (float): outlier probability, should be in range [0,1].
         num_iter (int): # of iterations to optimize for.
-        source_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
+        moving_weights (Float[Array, " m"] | None): optional per-point weights for source points (arbitrary positive values). If None, uniform weights are used.
         mask (Float[Array, "m n"] | None): optional mask matrix where nonzero entries indicate valid matches.
 
     Returns:
@@ -152,14 +152,14 @@ def align_fixed_iter(
     ]:
         (R, s, t, P), var = a
         mov_t = transform(mov, R, s, t)
-        if source_weights is None:
+        if moving_weights is None:
             if mask is None:
                 p = expectation(ref, mov_t, var, outlier_prob)
             else:
                 p = expectation_masked(ref, mov_t, var, outlier_prob, mask)
         else:
             p = expectation_weighted(
-                ref, mov_t, var, outlier_prob, source_weights
+                ref, mov_t, var, outlier_prob, moving_weights
             )
         (R, s, t), new_var = maximization(ref, mov, p, 1e-6)
         return ((R, s, t, P), new_var), new_var

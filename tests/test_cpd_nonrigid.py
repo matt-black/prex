@@ -21,7 +21,7 @@ def test_nonrigid_cpd_deformable_match():
     beta = 0.5
     lmbda = 10.0
 
-    (P, W, G), _ = align(
+    (P, G, W), _ = align(
         ref=ref,
         mov=mov,
         outlier_prob=0.0,

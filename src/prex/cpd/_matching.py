@@ -102,8 +102,10 @@ def expectation_masked(
         jnp.float_power(2 * jnp.pi * var, d / 2) * m, n
     )
     top = jnp.where(mask > 0, top, 0)
+    n_mpr = jnp.sum(mask, axis=0, keepdims=True)
+    n_msk = jnp.sum(mask)
     bot = jnp.add(
         jnp.clip(jnp.sum(top, axis=0, keepdims=True), jnp.finfo(x.dtype).eps),
-        outl_term,
+        outl_term * (n_mpr / n_msk),
     )
     return jnp.divide(top, bot)
