@@ -192,14 +192,13 @@ def interpolate_covariance(
     lambda_: float,
     var: float,
     eps: float = 1e-12,
-) -> Float[Array, "i d"]:
+) -> Float[Array, "i i"]:
     """Predict the covariance matrix between all interpolation points.
 
     Args:
         mov (Float[Array, "m d"]): points from moving point cloud
         interp (Float[Array, "i d"]): points to interpolate vectors at
-        resid (Float[Array, "m d"]): fitting residual
-        P (Float[Array, "n m"]): fitted matching matrix
+        P (Float[Array, "m n"]): fitted matching matrix
         G_mm (Float[Array, "m m"]): gram matrix between all pairs of points in moving point cloud
         kernel (KernelFunction): kernel function
         beta (float): shape parameter for kernel
@@ -215,4 +214,6 @@ def interpolate_covariance(
     psi = (lambda_ * var / s**2) * jnp.diag(1.0 / nu)
     G_im = affinity_matrix(interp, mov, kernel, beta)
     G_ii = affinity_matrix(interp, interp, kernel, beta)
-    return G_ii + psi - G_im @ jnp.linalg.inv(G_mm + psi) @ jnp.transpose(G_im)
+    return (1.0 / lambda_) * (
+        G_ii - G_im @ jnp.linalg.inv(G_mm + psi) @ jnp.transpose(G_im)
+    )
