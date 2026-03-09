@@ -62,7 +62,7 @@ def update_matching(
     return p_mn, nu, nu_p, n_hat, x_hat
 
 
-@Partial(jax.jit, static_argnums=(10, 11))
+@Partial(jax.jit, static_argnums=(9, 10))
 def update_nonrigid(
     x_hat: Float[Array, "m d"],
     y: Float[Array, "m d"],
@@ -70,7 +70,6 @@ def update_nonrigid(
     R: RotationMatrix,
     s: ScalingTerm,
     t: Translation,
-    v_hat: Float[Array, "m d"],
     nu: Float[Array, " m"],
     var: Float[Array, ""],
     n_hat: Float[Array, ""],
@@ -82,6 +81,34 @@ def update_nonrigid(
     Float[Array, "m d"],
     Float[Array, " m"],
     Float[Array, " m"],
+    Float[Array, "m d"],
+]:
+    v_hat, u_hat, sigma_m, alpha_m, W = _update_nonrigid_with_weights(
+        x_hat, y, G, R, s, t, nu, var, n_hat, kappa, lambda_, fixed_alpha
+    )
+    return v_hat, u_hat, sigma_m, alpha_m, W
+
+
+@Partial(jax.jit, static_argnums=(9, 10))
+def _update_nonrigid_with_weights(
+    x_hat: Float[Array, "m d"],
+    y: Float[Array, "m d"],
+    G: KernelMatrix,
+    R: RotationMatrix,
+    s: ScalingTerm,
+    t: Translation,
+    nu: Float[Array, " m"],
+    var: Float[Array, ""],
+    n_hat: Float[Array, ""],
+    kappa: float,
+    lambda_: float,
+    fixed_alpha: Float[Array, " m"] | None = None,
+) -> tuple[
+    Float[Array, "m d"],
+    Float[Array, "m d"],
+    Float[Array, " m"],
+    Float[Array, " m"],
+    Float[Array, "m d"],
 ]:
     m, _ = y.shape
     eps = jnp.finfo(y.dtype).eps
@@ -126,7 +153,7 @@ def update_nonrigid(
         jnp.diagonal(G_inv_G) * (cc / lambda_) / (nu + eps), 0.0
     )
 
-    return v_hat, u_hat, sigma_m, alpha_m
+    return v_hat, u_hat, sigma_m, alpha_m, W
 
 
 def update_rigid(

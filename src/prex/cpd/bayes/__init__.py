@@ -59,6 +59,7 @@ def align(
     transform_mode: str = "both",
     normalize_input: bool = False,
     debias: bool = False,
+    return_weights: bool = False,
 ) -> tuple[
     TransformParams,
     Union[Float[Array, " {num_iter}"], tuple[Float[Array, ""], int]],
@@ -140,6 +141,7 @@ def align(
             fixed_alpha,
             transform_mode,
             debias,
+            return_weights,
         )
     else:
         (P, R, s, t, v), var = _align_tolerance(
@@ -161,6 +163,7 @@ def align(
             fixed_alpha,
             transform_mode,
             debias,
+            return_weights,
         )
 
     # Denormalize if needed
@@ -201,6 +204,7 @@ def align_with_ic(
     transform_mode: str = "both",
     normalize_input: bool = False,
     debias: bool = False,
+    return_weights: bool = False,
 ) -> tuple[
     TransformParams,
     Union[Float[Array, " {num_iter}"], tuple[Float[Array, ""], int]],
@@ -271,6 +275,7 @@ def align_with_ic(
             fixed_alpha,
             transform_mode,
             debias,
+            return_weights,
         )
     else:
         (P, R, s, t, v), var = _align_fixed_iter(
@@ -291,6 +296,7 @@ def align_with_ic(
             fixed_alpha,
             transform_mode,
             debias,
+            return_weights,
         )
 
     # Denormalize if needed
@@ -317,6 +323,7 @@ type _StateType = tuple[
     Float[Array, " m"],  # sigma_m
     Float[Array, " m"],  # alpha_m
     Float[Array, "m d"],  # v_hat (current vector field)
+    Float[Array, "m d"],  # W (current GP weights)
     Float[Array, "m d"],  # y_hat (current aligned moving points)
     Float[Array, ""],  # current variance
     int,  # current iteration
@@ -342,17 +349,18 @@ def _align_tolerance(
     fixed_alpha: Float[Array, " m"] | None,
     transform_mode: str,
     debias: bool,
+    return_weights: bool,
 ) -> tuple[TransformParams, tuple[Float[Array, ""], int]]:
     n, d = x.shape
     m, _ = y.shape
 
     def cond_fun(a: _StateType) -> Bool:
-        _, _, _, _, _, _, _, _, var, iter_num = a
+        _, _, _, _, _, _, _, _, _, var, iter_num = a
         return jnp.logical_and(var > tolerance, iter_num < max_iter)
 
     def body_fun(a: _StateType) -> _StateType:
         # unpack
-        _, R, s, t, sigma_m, alpha_m, v_hat, y_hat, var, iter_num = a
+        _, R, s, t, sigma_m, alpha_m, v_hat, W, y_hat, var, iter_num = a
         # expectation step
         P, nu, nu_prime, n_hat, x_hat = update_matching(
             x, y_hat, sigma_m, alpha_m, s, var, outlier_prob
@@ -377,17 +385,17 @@ def _align_tolerance(
             )
             var_bar = jnp.array(0.0)
             v_hat = jnp.zeros_like(y)
+            W = jnp.zeros_like(y)
 
         elif transform_mode == "nonrigid":
             # Only update nonrigid deformation, keep R=I, s=1, t=0
-            v_hat, u_hat, sigma_m, alpha_m = update_nonrigid(
+            v_hat, u_hat, sigma_m, alpha_m, W = update_nonrigid(
                 x_hat,
                 y,
                 G,
                 R,
                 s,
                 t,
-                v_hat,
                 nu,
                 var,
                 n_hat,
@@ -402,14 +410,13 @@ def _align_tolerance(
 
         else:  # "both"
             # Update both nonrigid and rigid (current behavior)
-            v_hat, u_hat, sigma_m, alpha_m = update_nonrigid(
+            v_hat, u_hat, sigma_m, alpha_m, W = update_nonrigid(
                 x_hat,
                 y,
                 G,
                 R,
                 s,
                 t,
-                v_hat,
                 nu,
                 var,
                 n_hat,
@@ -425,14 +432,44 @@ def _align_tolerance(
         y_hat = transform(y + v_hat, R, s, t)
         # update variance to track how well the point clouds match
         var = update_variance(x, y_hat, P, s, nu, nu_prime, n_hat, var_bar)
-        return P, R, s, t, sigma_m, alpha_m, v_hat, y_hat, var, iter_num + 1
+        return (
+            P,
+            R,
+            s,
+            t,
+            sigma_m,
+            alpha_m,
+            v_hat,
+            W,
+            y_hat,
+            var,
+            iter_num + 1,
+        )
 
-    P, R, s, t, sigma_m, alpha_m, v_hat, _, var, iter_num = jax.lax.while_loop(
-        cond_fun,
-        body_fun,
-        (jnp.empty((m, n)), R, s, t, sigma_m, alpha_m, v_hat, y, var_i, 0),
+    init_W = jnp.zeros_like(y)
+    P, R, s, t, sigma_m, alpha_m, v_hat, W, _, var, iter_num = (
+        jax.lax.while_loop(
+            cond_fun,
+            body_fun,
+            (
+                jnp.empty((m, n)),
+                R,
+                s,
+                t,
+                sigma_m,
+                alpha_m,
+                v_hat,
+                init_W,
+                y,
+                var_i,
+                0,
+            ),
+        )
     )
-    return (P, R, s, t, v_hat), (var, iter_num)
+    return (P, R, s, t, jax.lax.select(return_weights, W, v_hat)), (
+        var,
+        iter_num,
+    )
 
 
 type _CarryType = tuple[
@@ -443,6 +480,7 @@ type _CarryType = tuple[
     Float[Array, " m"],  # sigma_m
     Float[Array, " m"],  # alpha_m
     Float[Array, "m d"],  # v_hat (current vector field)
+    Float[Array, "m d"],  # W (current GP weights)
     Float[Array, "m d"],  # y_hat (current aligned moving points)
     Float[Array, ""],  # current variance
 ]
@@ -466,6 +504,7 @@ def _align_fixed_iter(
     fixed_alpha: Float[Array, " m"] | None,
     transform_mode: str,
     debias: bool,
+    return_weights: bool,
 ) -> tuple[TransformParams, Float[Array, " {num_iter}"]]:
     n, d = x.shape
     m, _ = y.shape
@@ -475,7 +514,7 @@ def _align_fixed_iter(
         _,
     ) -> tuple[_CarryType, Float[Array, ""]]:
         # unpack the carry
-        _, R, s, t, sigma_m, alpha_m, v_hat, y_hat, var = carry
+        _, R, s, t, sigma_m, alpha_m, v_hat, W, y_hat, var = carry
         # update matching
         P, nu, nu_prime, n_hat, x_hat = update_matching(
             x, y_hat, sigma_m, alpha_m, s, var, outlier_prob
@@ -499,17 +538,17 @@ def _align_fixed_iter(
             )
             var_bar = jnp.array(0.0)
             v_hat = jnp.zeros_like(y)
+            W = jnp.zeros_like(y)
 
         elif transform_mode == "nonrigid":
             # Only update nonrigid deformation, keep R=I, s=1, t=0
-            v_hat, u_hat, sigma_m, alpha_m = update_nonrigid(
+            v_hat, u_hat, sigma_m, alpha_m, W = update_nonrigid(
                 x_hat,
                 y,
                 G,
                 R,
                 s,
                 t,
-                v_hat,
                 nu,
                 var,
                 n_hat,
@@ -524,14 +563,13 @@ def _align_fixed_iter(
 
         else:  # "both"
             # Update both nonrigid and rigid (current behavior)
-            v_hat, u_hat, sigma_m, alpha_m = update_nonrigid(
+            v_hat, u_hat, sigma_m, alpha_m, W = update_nonrigid(
                 x_hat,
                 y,
                 G,
                 R,
                 s,
                 t,
-                v_hat,
                 nu,
                 var,
                 n_hat,
@@ -545,12 +583,13 @@ def _align_fixed_iter(
 
         y_hat = transform(y + v_hat, R, s, t)
         var = update_variance(x, y_hat, P, s, nu, nu_prime, n_hat, var_bar)
-        return (P, R, s, t, sigma_m, alpha_m, v_hat, y_hat, var), var
+        return (P, R, s, t, sigma_m, alpha_m, v_hat, W, y_hat, var), var
 
-    (P, R, s, t, _, _, v_hat, _, _), varz = jax.lax.scan(
+    init_W = jnp.zeros_like(y)
+    (P, R, s, t, _, _, v_hat, W, _, _), varz = jax.lax.scan(
         scan_fun,
-        (jnp.empty((m, n)), R, s, t, sigma_m, alpha_m, v_hat, y, var_i),
+        (jnp.empty((m, n)), R, s, t, sigma_m, alpha_m, v_hat, init_W, y, var_i),
         None,
         length=num_iter,
     )
-    return (P, R, s, t, v_hat), varz
+    return (P, R, s, t, jax.lax.select(return_weights, W, v_hat)), varz
