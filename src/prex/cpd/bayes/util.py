@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Bool, Float
 
 from ...util import sqdist
 from .._matching import MatchingMatrix
@@ -273,18 +273,22 @@ def invert_gp_mapping(
     # Initial diff set to a value larger than tol to ensure execution
     init_val = (y, jnp.inf, 0)
 
-    def cond_fun(state: tuple[Float[Array, "n d"], float, int]):
+    def cond_fun(
+        state: tuple[Float[Array, "n d"], Float[Array, ""], int],
+    ) -> Bool:
         _, diff, i = state
         return jnp.logical_and(i < max_iter, diff > tol)
 
-    def body_fun(state: tuple[Float[Array, "n d"], float, int]):
+    def body_fun(
+        state: tuple[Float[Array, "n d"], Float[Array, ""], int],
+    ) -> tuple[Float[Array, "n d"], Float[Array, ""], int]:
         x_curr, _, i = state
         x_next = vmap_newton_step(x_curr, y)
         diff = jnp.sqrt(jnp.mean(jnp.square(x_next - x_curr)))
         return x_next, diff, i + 1
 
-    x_final, final_diff, iterations = jax.lax.while_loop(
-        cond_fun, body_fun, init_val
+    x_final, _, _ = jax.lax.while_loop(
+        cond_fun, body_fun, init_val  # pyright: ignore[reportArgumentType]
     )
 
     return x_final

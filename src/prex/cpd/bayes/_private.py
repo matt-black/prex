@@ -193,7 +193,7 @@ def update_rigid(
     )
 
     if debias:
-        S_uu += jnp.eye(d) * var_bar
+        S_uu = S_uu + jnp.eye(d) * var_bar
 
     big_phi, _, big_psiT = jnp.linalg.svd(S_xu)
     mid = jnp.diag(
